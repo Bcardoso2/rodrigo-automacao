@@ -5,14 +5,20 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "clean": "rm -rf baileys_auth node_modules package-lock.json",
+    "reset": "npm run clean && npm install",
+    "clear-auth": "rm -rf baileys_auth && echo 'Autenticação limpa! Reinicie o servidor.'",
+    "test": "node -e \"console.log('✅ Node.js funcionando!')\"",
+    "check": "node --version && npm --version"
   },
   "keywords": [
     "whatsapp",
     "baileys",
     "webhook",
     "kiwify",
-    "atendimento"
+    "atendimento",
+    "automacao"
   ],
   "author": "Bricio Cardoso",
   "license": "MIT",
@@ -20,14 +26,16 @@
     "@whiskeysockets/baileys": "^6.7.8",
     "@hapi/boom": "^10.0.1",
     "express": "^4.21.1",
-    "body-parser": "^1.20.2",
-    "pino": "^8.16.2",
+    "body-parser": "^1.20.3",
+    "pino": "^9.4.0",
+    "pino-pretty": "^11.2.2",
     "qrcode-terminal": "^0.12.0"
   },
   "devDependencies": {
-    "nodemon": "^3.0.1"
+    "nodemon": "^3.1.7"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
   }
 }
