@@ -1,4 +1,4 @@
-// server.js
+// server.js - CORRIGIDO
 const express = require('express');
 const bodyParser = require('body-parser');
 const crypto = require('crypto');
@@ -29,8 +29,10 @@ if (!fs.existsSync(AUTH_FOLDER)) {
 let sock = null;
 let qrCode = null;
 let isConnected = false;
+let connectionAttempts = 0;
+const MAX_ATTEMPTS = 3;
 
-// Banco de dados em memória (use MongoDB/PostgreSQL em produção)
+// Banco de dados em memória
 const database = {
   customers: new Map(),
   orders: new Map(),
@@ -41,46 +43,126 @@ const database = {
 app.use(bodyParser.json());
 app.use(express.static('public'));
 
-// Logger
-const logger = pino({ level: 'info' });
+// Logger mais verboso para debug
+const logger = pino({ 
+  level: 'debug',
+  transport: {
+    target: 'pino-pretty',
+    options: {
+      colorize: true
+    }
+  }
+});
 
-// Função para conectar ao WhatsApp
+// Função para limpar autenticação antiga (útil para debug)
+function clearAuth() {
+  try {
+    if (fs.existsSync(AUTH_FOLDER)) {
+      fs.rmSync(AUTH_FOLDER, { recursive: true, force: true });
+      fs.mkdirSync(AUTH_FOLDER, { recursive: true });
+      console.log('🧹 Autenticação antiga removida');
+    }
+  } catch (error) {
+    console.error('❌ Erro ao limpar auth:', error);
+  }
+}
+
+// Função para conectar ao WhatsApp - CORRIGIDA
 async function connectToWhatsApp() {
   try {
+    connectionAttempts++;
+    
+    console.log(`\n🔄 Tentativa de conexão #${connectionAttempts}...`);
+    
+    if (connectionAttempts > MAX_ATTEMPTS) {
+      console.log('⚠️ Muitas tentativas. Limpando auth...');
+      clearAuth();
+      connectionAttempts = 0;
+    }
+
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
-    const { version } = await fetchLatestBaileysVersion();
+    
+    // Buscar versão mais recente do Baileys
+    let version;
+    try {
+      const versionInfo = await fetchLatestBaileysVersion();
+      version = versionInfo.version;
+      console.log('📦 Versão Baileys:', version.join('.'));
+    } catch (error) {
+      console.log('⚠️ Usando versão padrão do Baileys');
+      version = [2, 3000, 0]; // Versão fallback
+    }
 
     sock = makeWASocket({
       version,
-      logger: pino({ level: 'silent' }),
-      printQRInTerminal: true,
+      logger: pino({ level: 'warn' }), // Mudei de 'silent' para 'warn'
+      printQRInTerminal: true, // Ainda imprime no terminal também
       auth: state,
+      browser: ['Robô Atendimento', 'Chrome', '1.0.0'], // Importante!
       defaultQueryTimeoutMs: undefined,
+      connectTimeoutMs: 60000, // 60 segundos
+      keepAliveIntervalMs: 30000, // Keep alive
+      retryRequestDelayMs: 250,
+      markOnlineOnConnect: true,
+      syncFullHistory: false, // Não sincronizar histórico completo
+      getMessage: async (key) => {
+        return { conversation: '' };
+      }
     });
 
-    // Evento de atualização de conexão
+    // ===== EVENTO DE CONEXÃO - CORRIGIDO =====
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
 
+      // QR CODE GERADO
       if (qr) {
         qrCode = qr;
-        console.log('\n📱 QR Code gerado! Acesse /qr para escanear\n');
+        connectionAttempts = 0; // Resetar contador se QR foi gerado
+        console.log('\n✅ ===== QR CODE GERADO =====');
+        console.log('📱 QR Code disponível em: http://localhost:' + PORT + '/qr');
+        console.log('⏰ O QR Code expira em 60 segundos');
+        console.log('🔄 Um novo QR será gerado automaticamente\n');
       }
 
+      // CONEXÃO FECHADA
       if (connection === 'close') {
-        const shouldReconnect = (lastDisconnect?.error instanceof Boom) &&
-          lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut;
-
-        console.log('❌ Conexão fechada. Reconectando...', shouldReconnect);
         isConnected = false;
+        qrCode = null;
+        
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+
+        console.log('\n❌ Conexão fechada');
+        console.log('Código:', statusCode);
+        console.log('Reconectar?', shouldReconnect);
+
+        if (statusCode === DisconnectReason.loggedOut) {
+          console.log('⚠️ Você foi deslogado. Limpando credenciais...');
+          clearAuth();
+        }
 
         if (shouldReconnect) {
-          await connectToWhatsApp();
+          console.log('🔄 Reconectando em 3 segundos...\n');
+          setTimeout(connectToWhatsApp, 3000);
         }
-      } else if (connection === 'open') {
-        console.log('✅ WhatsApp conectado com sucesso!');
+      } 
+      
+      // CONECTANDO
+      else if (connection === 'connecting') {
+        console.log('🔄 Conectando ao WhatsApp...');
+      }
+      
+      // CONEXÃO ABERTA
+      else if (connection === 'open') {
+        console.log('\n✅ ===== WHATSAPP CONECTADO =====');
+        console.log('🎉 Bot funcionando perfeitamente!');
+        console.log('📱 Número:', sock.user?.id);
+        console.log('👤 Nome:', sock.user?.name);
+        console.log('================================\n');
+        
         isConnected = true;
         qrCode = null;
+        connectionAttempts = 0;
       }
     });
 
@@ -97,13 +179,13 @@ async function connectToWhatsApp() {
                    msg.message.extendedTextMessage?.text || '';
 
       console.log(`📩 Mensagem recebida de ${from}: ${text}`);
-
-      // Aqui você pode adicionar lógica de resposta automática
       await handleIncomingMessage(from, text, msg);
     });
 
   } catch (error) {
-    console.error('❌ Erro ao conectar WhatsApp:', error);
+    console.error('\n❌ ERRO AO CONECTAR WHATSAPP:');
+    console.error(error);
+    console.log('\n🔄 Nova tentativa em 5 segundos...\n');
     setTimeout(connectToWhatsApp, 5000);
   }
 }
@@ -116,10 +198,8 @@ async function sendWhatsAppMessage(phone, message) {
       return false;
     }
 
-    // Formatar número (adicionar @s.whatsapp.net se necessário)
     let formattedPhone = phone.replace(/[^\d]/g, '');
     
-    // Adicionar código do país se não tiver
     if (!formattedPhone.startsWith('55')) {
       formattedPhone = '55' + formattedPhone;
     }
@@ -140,7 +220,6 @@ async function sendWhatsAppMessage(phone, message) {
 async function handleIncomingMessage(from, text, fullMessage) {
   const lowerText = text.toLowerCase().trim();
 
-  // Comandos básicos
   if (lowerText === 'menu' || lowerText === 'ajuda') {
     const menuMessage = `*🤖 Menu de Atendimento*\n\n` +
       `1️⃣ *status* - Verificar status do pedido\n` +
@@ -155,7 +234,6 @@ async function handleIncomingMessage(from, text, fullMessage) {
     await sock.sendMessage(from, { 
       text: '🔍 Verificando seu pedido, aguarde um momento...' 
     });
-    // Aqui você buscaria no banco de dados
   }
   else if (lowerText.includes('produtos')) {
     await sock.sendMessage(from, { 
@@ -168,7 +246,6 @@ async function handleIncomingMessage(from, text, fullMessage) {
     });
   }
   else {
-    // Resposta padrão
     await sock.sendMessage(from, { 
       text: `Olá! 👋\n\nRecebemos sua mensagem: "${text}"\n\nDigite *menu* para ver as opções disponíveis.` 
     });
@@ -285,33 +362,13 @@ function generateMessage(eventType, customer, orderData) {
         `📅 *Próxima cobrança:* ${orderData.Subscription?.next_payment}\n\n` +
         `Obrigado por continuar conosco! ❤️`,
       actions: ['agradecer']
-    },
-    
-    subscription_canceled: {
-      text: `Olá ${firstName}! 😢\n\n` +
-        `Sua assinatura de *${productName}* foi cancelada.\n\n` +
-        `Sentiremos muito sua falta!\n\n` +
-        `Pode me contar o motivo? Gostaríamos de melhorar!\n\n` +
-        `_Sua opinião é muito importante para nós._`,
-      actions: ['feedback', 'reativacao']
-    },
-    
-    subscription_late: {
-      text: `Olá ${firstName}! ⚠️\n\n` +
-        `Detectamos um problema no pagamento da sua assinatura de *${productName}*.\n\n` +
-        `Para não perder o acesso, você pode:\n\n` +
-        `1️⃣ Atualizar forma de pagamento\n` +
-        `2️⃣ Pagar com PIX\n` +
-        `3️⃣ Falar com suporte\n\n` +
-        `Digite o *número* da opção.`,
-      actions: ['recuperar_pagamento']
     }
   };
   
   return messages[eventType] || messages.order_approved;
 }
 
-// Iniciar conversa automática via WhatsApp
+// Iniciar conversa automática
 async function startConversation(eventType, customer, orderData) {
   const conversationId = `${customer.email}_${Date.now()}`;
   
@@ -344,7 +401,6 @@ async function startConversation(eventType, customer, orderData) {
   console.log('Telefone:', customer.mobile);
   console.log('Evento:', eventType);
   
-  // Enviar mensagem via WhatsApp
   if (customer.mobile && isConnected) {
     const sent = await sendWhatsAppMessage(customer.mobile, messageData.text);
     conversation.whatsappSent = sent;
@@ -384,11 +440,7 @@ app.post('/webhook', async (req, res) => {
     console.log(`Cliente: ${webhookData.Customer.email}`);
     
     const customer = saveCustomer(webhookData.Customer, webhookData);
-    console.log('✅ Cliente salvo/atualizado');
-    
     saveOrder(webhookData);
-    console.log('✅ Pedido salvo');
-    
     await startConversation(eventType, customer, webhookData);
     
     return res.status(200).json({ 
@@ -403,7 +455,7 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// Endpoint para QR Code
+// Endpoint para QR Code - MELHORADO
 app.get('/qr', (req, res) => {
   if (qrCode) {
     res.send(`
@@ -421,7 +473,7 @@ app.get('/qr', (req, res) => {
             justify-content: center;
             min-height: 100vh;
             margin: 0;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #25D366 0%, #128C7E 100%);
           }
           .container {
             background: white;
@@ -429,15 +481,37 @@ app.get('/qr', (req, res) => {
             border-radius: 20px;
             box-shadow: 0 10px 30px rgba(0,0,0,0.3);
             text-align: center;
+            max-width: 400px;
           }
-          h1 { color: #25D366; margin-bottom: 1rem; }
-          p { color: #666; margin-bottom: 2rem; }
-          #qr { margin: 2rem 0; }
+          h1 { color: #25D366; margin-bottom: 0.5rem; }
+          .subtitle { color: #666; margin-bottom: 1.5rem; font-size: 14px; }
+          #qr { margin: 1.5rem 0; }
           .status { 
             background: #e8f5e9; 
             color: #2e7d32; 
-            padding: 0.5rem 1rem; 
-            border-radius: 5px;
+            padding: 0.75rem; 
+            border-radius: 10px;
+            margin-top: 1rem;
+            font-weight: bold;
+          }
+          .instructions {
+            background: #f5f5f5;
+            padding: 1rem;
+            border-radius: 10px;
+            margin-top: 1rem;
+            text-align: left;
+            font-size: 13px;
+          }
+          .instructions ol {
+            margin: 0.5rem 0 0 0;
+            padding-left: 1.5rem;
+          }
+          .instructions li {
+            margin: 0.5rem 0;
+          }
+          .timer {
+            color: #666;
+            font-size: 12px;
             margin-top: 1rem;
           }
         </style>
@@ -446,24 +520,42 @@ app.get('/qr', (req, res) => {
       <body>
         <div class="container">
           <h1>📱 Conectar WhatsApp</h1>
-          <p>Escaneie o QR Code abaixo com seu WhatsApp</p>
+          <p class="subtitle">Escaneie o QR Code com seu celular</p>
           <div id="qr"></div>
-          <div class="status">✅ QR Code gerado com sucesso!</div>
-          <p style="font-size: 12px; color: #999; margin-top: 1rem;">
-            Esta página será atualizada automaticamente a cada 5 segundos
-          </p>
+          <div class="status">✅ QR Code gerado!</div>
+          
+          <div class="instructions">
+            <strong>📋 Como conectar:</strong>
+            <ol>
+              <li>Abra o WhatsApp no celular</li>
+              <li>Toque em Menu (⋮) > Aparelhos conectados</li>
+              <li>Toque em "Conectar um aparelho"</li>
+              <li>Aponte a câmera para este QR Code</li>
+            </ol>
+          </div>
+          
+          <p class="timer">⏰ Atualizando em <span id="countdown">5</span>s...</p>
         </div>
         <script>
           const qrText = ${JSON.stringify(qrCode)};
           QRCode.toCanvas(
             document.getElementById('qr'),
             qrText,
-            { width: 300, margin: 2 },
+            { width: 300, margin: 2, color: { dark: '#128C7E' } },
             (error) => {
               if (error) console.error(error);
             }
           );
-          setTimeout(() => location.reload(), 5000);
+          
+          let seconds = 5;
+          const countdown = setInterval(() => {
+            seconds--;
+            document.getElementById('countdown').textContent = seconds;
+            if (seconds <= 0) {
+              clearInterval(countdown);
+              location.reload();
+            }
+          }, 1000);
         </script>
       </body>
       </html>
@@ -483,7 +575,7 @@ app.get('/qr', (req, res) => {
             justify-content: center;
             min-height: 100vh;
             margin: 0;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, #25D366 0%, #128C7E 100%);
           }
           .container {
             background: white;
@@ -493,14 +585,28 @@ app.get('/qr', (req, res) => {
             text-align: center;
           }
           h1 { color: #25D366; margin-bottom: 1rem; }
-          .emoji { font-size: 4rem; margin: 1rem 0; }
+          .emoji { font-size: 5rem; margin: 1rem 0; animation: bounce 2s infinite; }
+          @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-20px); }
+          }
+          .info {
+            background: #f5f5f5;
+            padding: 1rem;
+            border-radius: 10px;
+            margin-top: 1rem;
+          }
         </style>
       </head>
       <body>
         <div class="container">
           <div class="emoji">✅</div>
           <h1>WhatsApp Conectado!</h1>
-          <p>Seu robô está funcionando perfeitamente.</p>
+          <p>Seu robô está ativo e funcionando perfeitamente.</p>
+          <div class="info">
+            <p><strong>Status:</strong> Online 🟢</p>
+            <p><strong>Pronto para:</strong> Receber e enviar mensagens</p>
+          </div>
         </div>
       </body>
       </html>
@@ -532,10 +638,10 @@ app.get('/qr', (req, res) => {
           }
           .spinner {
             border: 4px solid #f3f3f3;
-            border-top: 4px solid #25D366;
+            border-top: 4px solid #667eea;
             border-radius: 50%;
-            width: 50px;
-            height: 50px;
+            width: 60px;
+            height: 60px;
             animation: spin 1s linear infinite;
             margin: 2rem auto;
           }
@@ -543,18 +649,33 @@ app.get('/qr', (req, res) => {
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
           }
+          .attempts {
+            font-size: 12px;
+            color: #999;
+            margin-top: 1rem;
+          }
         </style>
       </head>
       <body>
         <div class="container">
           <h1>⏳ Gerando QR Code...</h1>
           <div class="spinner"></div>
-          <p>Aguarde enquanto preparamos a conexão</p>
+          <p>Aguarde enquanto iniciamos a conexão</p>
+          <p class="attempts">Tentativa ${connectionAttempts}/${MAX_ATTEMPTS}</p>
         </div>
       </body>
       </html>
     `);
   }
+});
+
+// NOVO: Endpoint para forçar limpeza de auth
+app.post('/clear-auth', (req, res) => {
+  clearAuth();
+  res.json({ 
+    success: true, 
+    message: 'Autenticação limpa. Reconecte em /qr' 
+  });
 });
 
 // Status do sistema
@@ -563,7 +684,8 @@ app.get('/status', (req, res) => {
     status: 'online',
     whatsapp: {
       connected: isConnected,
-      hasQrCode: !!qrCode
+      hasQrCode: !!qrCode,
+      attempts: connectionAttempts
     },
     database: {
       customers: database.customers.size,
@@ -575,7 +697,7 @@ app.get('/status', (req, res) => {
   });
 });
 
-// Demais endpoints...
+// Demais endpoints
 app.get('/customers', (req, res) => {
   const customers = Array.from(database.customers.values());
   res.json({ total: customers.length, customers });
@@ -595,10 +717,7 @@ app.get('/customers/:email', (req, res) => {
 });
 
 app.head('/webhook', (req, res) => res.status(200).send());
-
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date() });
-});
+app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }));
 
 // Página inicial
 app.get('/', (req, res) => {
@@ -661,7 +780,7 @@ app.get('/', (req, res) => {
           transition: transform 0.2s;
         }
         .link-card:hover { transform: translateY(-5px); }
-        .link-card h3 { margin-bottom: 0.5rem; }
+        .link-card h3 { margin-bottom: 0.5rem; font-size: 2rem; }
       </style>
     </head>
     <body>
@@ -718,15 +837,22 @@ app.get('/', (req, res) => {
 // Iniciar servidor e WhatsApp
 app.listen(PORT, () => {
   console.log(`
-  🤖 Robô de Atendimento Iniciado!
+  ╔════════════════════════════════════════╗
+  ║   🤖 ROBÔ DE ATENDIMENTO WHATSAPP     ║
+  ╚════════════════════════════════════════╝
   
-  📡 Servidor: http://localhost:${PORT}
-  🔐 Webhook Secret: ${WEBHOOK_SECRET ? '✅' : '❌'}
+  📡 Servidor rodando em: http://localhost:${PORT}
+  🔐 Webhook Secret: ${WEBHOOK_SECRET ? '✅ Configurado' : '❌ Não configurado'}
   
   📱 Para conectar o WhatsApp:
   → Acesse: http://localhost:${PORT}/qr
+  → Escaneie o QR Code com seu celular
   
-  Iniciando conexão WhatsApp...
+  🔧 Debug e Administração:
+  → Status: http://localhost:${PORT}/status
+  → Limpar Auth: POST http://localhost:${PORT}/clear-auth
+  
+  ⏳ Iniciando conexão WhatsApp...
   `);
   
   connectToWhatsApp();
