@@ -1,4 +1,4 @@
-// server.js - CORRIGIDO PARA EXIBIR QR NO FRONT
+// server.js - IA ECONÔMICA (Gasta o mínimo possível)
 const express = require('express');
 const bodyParser = require('body-parser');
 const crypto = require('crypto');
@@ -11,7 +11,8 @@ const {
 const { Boom } = require('@hapi/boom');
 const pino = require('pino');
 const fs = require('fs');
-const path = require('path');
+const OpenAI = require('openai');
+const QRCode = require('qrcode');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -19,16 +20,26 @@ const PORT = process.env.PORT || 3000;
 // Configurações
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'YOUR_SECRET_TOKEN';
 const AUTH_FOLDER = './baileys_auth';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'sua-chave-aqui';
+const DB_FILE = './database.json';
 
-// Garantir que a pasta existe
+// ESTRATÉGIA DE ECONOMIA:
+// 1. Usa gpt-3.5-turbo (10x mais barato que GPT-4)
+// 2. Mantém histórico curto (só últimas 6 mensagens)
+// 3. Respostas limitadas a 150 tokens
+// 4. Usa respostas prontas quando possível
+// 5. IA só entra quando necessário
+
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+
 if (!fs.existsSync(AUTH_FOLDER)) {
   fs.mkdirSync(AUTH_FOLDER, { recursive: true });
 }
 
-// Estado do WhatsApp - IMPORTANTE: qrCode agora armazena como data URL
+// Estado WhatsApp
 let sock = null;
 let qrCode = null;
-let qrCodeDataURL = null; // NOVO: para o front-end
+let qrCodeDataURL = null;
 let isConnected = false;
 let connectionAttempts = 0;
 const MAX_ATTEMPTS = 3;
@@ -37,20 +48,102 @@ const MAX_ATTEMPTS = 3;
 const database = {
   customers: new Map(),
   orders: new Map(),
-  conversations: new Map()
+  conversations: new Map(),
+  aiConversations: new Map(),
+  activeChats: new Map()
+};
+
+// Rate Limiting
+const messageTimestamps = new Map();
+
+// PRODUTOS (PERSONALIZE AQUI!)
+const PRODUCTS = {
+  curso: {
+    id: 'curso',
+    name: 'Curso Completo',
+    price: 197,
+    description: 'Aprenda do zero ao avançado',
+    link: 'https://pay.kiwify.com.br/seu-link-curso'
+  },
+  mentoria: {
+    id: 'mentoria',
+    name: 'Mentoria Individual',
+    price: 497,
+    description: 'Mentoria personalizada 1:1',
+    link: 'https://pay.kiwify.com.br/seu-link-mentoria'
+  },
+  vip: {
+    id: 'vip',
+    name: 'Pacote VIP',
+    price: 997,
+    description: 'Curso + Mentoria + Bônus',
+    link: 'https://pay.kiwify.com.br/seu-link-vip'
+  }
 };
 
 // Middleware
 app.use(bodyParser.json());
 app.use(express.static('public'));
 
-// Logger
-const logger = pino({ level: 'info' });
+// ===== PERSISTÊNCIA DE DADOS =====
+function loadDatabase() {
+  try {
+    if (fs.existsSync(DB_FILE)) {
+      const data = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+      database.customers = new Map(data.customers || []);
+      database.orders = new Map(data.orders || []);
+      database.conversations = new Map(data.conversations || []);
+      console.log('💾 Database carregado');
+    }
+  } catch (error) {
+    console.error('❌ Erro ao carregar DB:', error);
+  }
+}
 
-// Função para converter QR em Data URL
+function saveDatabase() {
+  try {
+    const data = {
+      customers: Array.from(database.customers.entries()),
+      orders: Array.from(database.orders.entries()),
+      conversations: Array.from(database.conversations.entries())
+    };
+    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+    console.log('💾 Database salvo');
+  } catch (error) {
+    console.error('❌ Erro ao salvar DB:', error);
+  }
+}
+
+// Auto-save a cada 2 minutos
+setInterval(saveDatabase, 120000);
+
+// Salvar ao fechar
+process.on('SIGINT', () => {
+  console.log('\n🛑 Encerrando...');
+  saveDatabase();
+  process.exit(0);
+});
+
+// ===== RATE LIMITING =====
+function checkRateLimit(phone) {
+  const now = Date.now();
+  const timestamps = messageTimestamps.get(phone) || [];
+  
+  // Remove mensagens antigas (>1 minuto)
+  const recent = timestamps.filter(t => now - t < 60000);
+  
+  if (recent.length >= 10) {
+    console.log(`⚠️ Rate limit: ${phone}`);
+    return false;
+  }
+  
+  recent.push(now);
+  messageTimestamps.set(phone, recent);
+  return true;
+}
+
+// ===== QR CODE =====
 function qrToDataURL(qr) {
-  // O QR vem como string, vamos usar a biblioteca qrcode para converter
-  const QRCode = require('qrcode');
   return new Promise((resolve, reject) => {
     QRCode.toDataURL(qr, { width: 300, margin: 2 }, (err, url) => {
       if (err) reject(err);
@@ -59,28 +152,293 @@ function qrToDataURL(qr) {
   });
 }
 
-// Limpar auth
 function clearAuth() {
   try {
     if (fs.existsSync(AUTH_FOLDER)) {
       fs.rmSync(AUTH_FOLDER, { recursive: true, force: true });
       fs.mkdirSync(AUTH_FOLDER, { recursive: true });
-      console.log('🧹 Autenticação limpa');
+      console.log('🧹 Auth limpa');
     }
   } catch (error) {
-    console.error('❌ Erro ao limpar auth:', error);
+    console.error('❌ Erro:', error);
   }
 }
 
-// Conectar ao WhatsApp
+// ===== SISTEMA HÍBRIDO: RESPOSTAS PRONTAS + IA =====
+
+// RESPOSTAS AUTOMÁTICAS (SEM CUSTO!)
+const AUTO_RESPONSES = {
+  saudacao: {
+    keywords: ['oi', 'olá', 'ola', 'hey', 'bom dia', 'boa tarde', 'boa noite', 'ola'],
+    response: (name) => `Olá${name ? ' ' + name : ''}! 👋\n\nSeja bem-vindo! Sou o assistente virtual da Digital Expert.\n\nEstou aqui para te ajudar a escolher o melhor produto para você. Como posso te ajudar hoje? 😊`
+  },
+  
+  produtos: {
+    keywords: ['produtos', 'produto', 'o que vende', 'o que tem', 'opções', 'opcoes', 'catalogo'],
+    response: () => `📦 *Nossos Produtos:*\n\n` +
+      `1️⃣ *Curso Completo* - R$ 197\n` +
+      `   → Do zero ao avançado\n\n` +
+      `2️⃣ *Mentoria Individual* - R$ 497\n` +
+      `   → Atendimento personalizado\n\n` +
+      `3️⃣ *Pacote VIP* - R$ 997\n` +
+      `   → Tudo incluído + bônus\n\n` +
+      `Digite o *número* do produto para saber mais! 🎯`
+  },
+  
+  preco: {
+    keywords: ['preço', 'preco', 'valor', 'quanto custa', 'quanto é', 'quanto e', 'valores'],
+    response: () => `💰 *Valores:*\n\n` +
+      `• Curso: *R$ 197* (ou 12x de R$ 19,70)\n` +
+      `• Mentoria: *R$ 497* (ou 12x de R$ 49,70)\n` +
+      `• VIP: *R$ 997* (ou 12x de R$ 99,70)\n\n` +
+      `Qual te interessa mais? 😊`
+  },
+  
+  pagamento: {
+    keywords: ['pagar', 'pagamento', 'como pago', 'formas de pagamento', 'cartão', 'cartao', 'pix', 'boleto'],
+    response: () => `💳 *Formas de Pagamento:*\n\n` +
+      `✅ PIX (aprovação instantânea)\n` +
+      `✅ Cartão de crédito (até 12x)\n` +
+      `✅ Boleto bancário\n\n` +
+      `Qual produto você quer? Te envio o link! 🔗`
+  },
+  
+  garantia: {
+    keywords: ['garantia', 'devolução', 'devolucao', 'reembolso', 'arrependimento', 'seguro'],
+    response: () => `🛡️ *Garantia de 7 dias!*\n\n` +
+      `Se não gostar, devolvemos 100% do seu dinheiro. Sem perguntas, sem burocracia!\n\n` +
+      `Você não tem nada a perder. Que tal garantir sua vaga? 😊`
+  },
+  
+  comprar: {
+    keywords: ['comprar', 'quero', 'me interessa', 'vou levar', 'fechou', 'bora', 'link', 'adquirir'],
+    response: () => `🎉 Que ótimo!\n\nQual produto você escolheu?\n\n` +
+      `1️⃣ Curso (R$ 197)\n` +
+      `2️⃣ Mentoria (R$ 497)\n` +
+      `3️⃣ VIP (R$ 997)\n\n` +
+      `Digite o número! 🚀`
+  }
+};
+
+// Detectar intenção (sem custo de IA)
+function detectIntent(message) {
+  const lowerMsg = message.toLowerCase().trim();
+  
+  for (const [intent, data] of Object.entries(AUTO_RESPONSES)) {
+    if (data.keywords.some(keyword => lowerMsg.includes(keyword))) {
+      return intent;
+    }
+  }
+  
+  // Detectar se está escolhendo produto
+  if (/^[1-3]$/.test(lowerMsg)) {
+    return 'escolha_produto';
+  }
+  
+  return null; // Não identificado = vai para IA
+}
+
+// Handler de escolha de produto
+function handleProductSelection(choice, customerData = {}) {
+  const products = {
+    '1': PRODUCTS.curso,
+    '2': PRODUCTS.mentoria,
+    '3': PRODUCTS.vip
+  };
+  
+  const product = products[choice];
+  if (!product) {
+    return `Opção inválida! 😅\n\nDigite:\n1️⃣ para Curso\n2️⃣ para Mentoria\n3️⃣ para VIP`;
+  }
+  
+  const name = customerData.firstName ? ` ${customerData.firstName}` : '';
+  
+  return `🎯 *${product.name}*${name}!\n\n` +
+    `${product.description}\n\n` +
+    `💰 Investimento: *R$ ${product.price}*\n` +
+    `💳 Ou 12x de R$ ${(product.price / 12).toFixed(2)}\n\n` +
+    `🔗 *Link de pagamento:*\n${product.link}\n\n` +
+    `✅ Acesso liberado automaticamente após aprovação!\n` +
+    `🛡️ Garantia de 7 dias - risco zero!\n\n` +
+    `Qualquer dúvida, estou aqui! 😊`;
+}
+
+// Gerar resposta automática
+function getAutoResponse(intent, customerData = {}, message = '') {
+  if (intent === 'escolha_produto') {
+    return handleProductSelection(message.trim(), customerData);
+  }
+  
+  const responseData = AUTO_RESPONSES[intent];
+  if (!responseData) return null;
+  
+  return responseData.response(customerData.firstName);
+}
+
+// ===== IA ECONÔMICA (só quando necessário) =====
+
+// Prompt CURTO para economizar tokens
+const AI_SYSTEM_PROMPT = `Você é vendedor consultivo da Digital Expert. Seja breve, natural e amigável.
+
+PRODUTOS:
+1. Curso Completo (R$197) - Para iniciantes que querem aprender do zero
+2. Mentoria Individual (R$497) - Atendimento personalizado 1:1
+3. Pacote VIP (R$997) - Completo: Curso + Mentoria + Bônus exclusivos
+
+OBJETIVO: Conversar naturalmente, identificar a necessidade do cliente e recomendar o produto ideal.
+
+REGRAS IMPORTANTES:
+- Seja consultivo, NUNCA agressivo
+- Faça perguntas para entender a necessidade
+- Respostas curtas (máximo 3-4 linhas)
+- Use emojis com moderação
+- Se cliente estiver pronto para comprar, envie: [LINK_CURSO], [LINK_MENTORIA] ou [LINK_VIP]
+- Foque em ajudar, não em empurrar venda
+- Seja educado e profissional sempre`;
+
+// Chamar IA (APENAS quando necessário)
+async function getAIResponse(customerPhone, customerMessage, customerData = {}) {
+  try {
+    console.log('💰 Chamando IA (custo estimado: $0.0001)');
+    
+    // Histórico CURTO (últimas 6 msgs = economia!)
+    let history = database.aiConversations.get(customerPhone) || [];
+    if (history.length > 6) {
+      history = history.slice(-6);
+    }
+
+    // Contexto mínimo
+    let context = customerData.firstName ? `Cliente: ${customerData.firstName}` : '';
+    
+    history.push({
+      role: 'user',
+      content: context ? `${context}\n${customerMessage}` : customerMessage
+    });
+
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-3.5-turbo', // 10x mais barato que GPT-4!
+      messages: [
+        { role: 'system', content: AI_SYSTEM_PROMPT },
+        ...history
+      ],
+      temperature: 0.7,
+      max_tokens: 150, // Respostas curtas = economia
+      presence_penalty: 0.3,
+      frequency_penalty: 0.3
+    });
+
+    const aiResponse = completion.choices[0].message.content;
+    
+    history.push({
+      role: 'assistant',
+      content: aiResponse
+    });
+
+    database.aiConversations.set(customerPhone, history);
+
+    // Substituir placeholders por links
+    let response = aiResponse
+      .replace(/\[LINK_CURSO\]/g, PRODUCTS.curso.link)
+      .replace(/\[LINK_MENTORIA\]/g, PRODUCTS.mentoria.link)
+      .replace(/\[LINK_VIP\]/g, PRODUCTS.vip.link);
+
+    return response;
+
+  } catch (error) {
+    console.error('❌ Erro IA:', error.message);
+    return 'Desculpe, tive um problema técnico. Pode repetir sua pergunta? 😅';
+  }
+}
+
+// ===== ROTEADOR INTELIGENTE (decide: AUTO ou IA) =====
+async function getSmartResponse(customerPhone, customerMessage, customerData = {}) {
+  // 1. Tenta resposta automática PRIMEIRO (SEM CUSTO!)
+  const intent = detectIntent(customerMessage);
+  
+  if (intent) {
+    const autoResponse = getAutoResponse(intent, customerData, customerMessage);
+    if (autoResponse) {
+      console.log('✅ Resposta automática (custo: R$ 0,00)');
+      return autoResponse;
+    }
+  }
+
+  // 2. Se não achou, usa IA (COM CUSTO MÍNIMO)
+  console.log('🤖 Usando IA para conversa...');
+  return await getAIResponse(customerPhone, customerMessage, customerData);
+}
+
+// ===== HANDLER DE MENSAGENS =====
+async function handleIncomingMessage(from, text, fullMessage) {
+  try {
+    const cleanPhone = from.replace('@s.whatsapp.net', '');
+    
+    // Rate limiting
+    if (!checkRateLimit(cleanPhone)) {
+      await sock.sendMessage(from, { 
+        text: 'Por favor, aguarde um momento antes de enviar mais mensagens. 😊' 
+      });
+      return;
+    }
+    
+    // Buscar dados do cliente
+    let customerData = {};
+    for (const customer of database.customers.values()) {
+      if (customer.mobile && customer.mobile.replace(/\D/g, '').includes(cleanPhone)) {
+        customerData = customer;
+        break;
+      }
+    }
+
+    console.log(`\n📨 Mensagem de ${customerData.firstName || cleanPhone}`);
+    console.log(`💬 "${text}"`);
+
+    // Marcar como digitando
+    await sock.sendPresenceUpdate('composing', from);
+
+    // Obter resposta inteligente
+    const response = await getSmartResponse(cleanPhone, text, customerData);
+
+    // Aguardar 1-2 segundos (parece humano)
+    await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 1000));
+
+    // Enviar resposta
+    await sock.sendMessage(from, { text: response });
+    
+    console.log(`✅ Respondido: "${response.substring(0, 50)}..."`);
+
+    // Salvar conversa
+    const conversation = database.conversations.get(from) || {
+      phone: cleanPhone,
+      messages: [],
+      createdAt: new Date()
+    };
+    
+    conversation.messages.push(
+      { from: 'customer', text, timestamp: new Date() },
+      { from: 'bot', text: response, timestamp: new Date() }
+    );
+    
+    database.conversations.set(from, conversation);
+
+  } catch (error) {
+    console.error('❌ Erro ao responder:', error);
+    try {
+      await sock.sendMessage(from, { 
+        text: 'Ops, tive um problema. Pode tentar de novo? 😅' 
+      });
+    } catch (e) {}
+  }
+}
+
+// ===== CONECTAR WHATSAPP =====
 async function connectToWhatsApp() {
   try {
     connectionAttempts++;
-    
-    console.log(`\n🔄 Tentativa de conexão #${connectionAttempts}...`);
+    console.log(`\n🔄 Conexão #${connectionAttempts}...`);
     
     if (connectionAttempts > MAX_ATTEMPTS) {
-      console.log('⚠️ Muitas tentativas. Limpando auth...');
+      console.log('⚠️ Limpando auth...');
       clearAuth();
       connectionAttempts = 0;
     }
@@ -91,9 +449,8 @@ async function connectToWhatsApp() {
     try {
       const versionInfo = await fetchLatestBaileysVersion();
       version = versionInfo.version;
-      console.log('📦 Versão Baileys:', version.join('.'));
+      console.log('📦 Baileys:', version.join('.'));
     } catch (error) {
-      console.log('⚠️ Usando versão padrão');
       version = [2, 3000, 0];
     }
 
@@ -102,34 +459,23 @@ async function connectToWhatsApp() {
       logger: pino({ level: 'silent' }),
       printQRInTerminal: true,
       auth: state,
-      browser: ['Robô Atendimento', 'Chrome', '1.0.0'],
+      browser: ['Robô Vendas', 'Chrome', '1.0.0'],
       defaultQueryTimeoutMs: undefined,
-      connectTimeoutMs: 60000,
-      keepAliveIntervalMs: 30000,
-      retryRequestDelayMs: 250,
-      markOnlineOnConnect: true,
-      syncFullHistory: false,
       getMessage: async (key) => ({ conversation: '' })
     });
 
-    // EVENTO DE CONEXÃO
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
 
-      // QR CODE GERADO - AGORA CONVERTE PARA DATA URL
       if (qr) {
         qrCode = qr;
         connectionAttempts = 0;
-        
-        // CONVERTER QR PARA DATA URL (base64) para exibir no HTML
         try {
           qrCodeDataURL = await qrToDataURL(qr);
-          console.log('\n✅ ===== QR CODE GERADO =====');
-          console.log('📱 Acesse: http://localhost:' + PORT + '/qr');
-          console.log('⏰ QR expira em 60 segundos');
-          console.log('🔄 Novo QR será gerado automaticamente\n');
+          console.log('\n✅ QR CODE GERADO');
+          console.log('📱 http://localhost:' + PORT + '/qr\n');
         } catch (error) {
-          console.error('❌ Erro ao converter QR:', error);
+          console.error('❌ Erro QR:', error);
         }
       }
 
@@ -141,27 +487,18 @@ async function connectToWhatsApp() {
         const statusCode = lastDisconnect?.error?.output?.statusCode;
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
-        console.log('\n❌ Conexão fechada');
-        console.log('Código:', statusCode);
-
         if (statusCode === DisconnectReason.loggedOut) {
-          console.log('⚠️ Deslogado. Limpando credenciais...');
           clearAuth();
         }
 
         if (shouldReconnect) {
-          console.log('🔄 Reconectando em 3 segundos...\n');
           setTimeout(connectToWhatsApp, 3000);
         }
       } 
-      else if (connection === 'connecting') {
-        console.log('🔄 Conectando...');
-      }
       else if (connection === 'open') {
-        console.log('\n✅ ===== WHATSAPP CONECTADO =====');
-        console.log('🎉 Bot funcionando!');
-        console.log('📱 Número:', sock.user?.id);
-        console.log('================================\n');
+        console.log('\n✅ WHATSAPP CONECTADO');
+        console.log('📱', sock.user?.id);
+        console.log('🤖 Bot IA conversacional ativo!\n');
         
         isConnected = true;
         qrCode = null;
@@ -171,7 +508,6 @@ async function connectToWhatsApp() {
     });
 
     sock.ev.on('creds.update', saveCreds);
-
     sock.ev.on('messages.upsert', async ({ messages }) => {
       const msg = messages[0];
       if (!msg.message || msg.key.fromMe) return;
@@ -180,76 +516,18 @@ async function connectToWhatsApp() {
       const text = msg.message.conversation || 
                    msg.message.extendedTextMessage?.text || '';
 
-      console.log(`📩 Mensagem de ${from}: ${text}`);
-      await handleIncomingMessage(from, text, msg);
+      if (text) {
+        await handleIncomingMessage(from, text, msg);
+      }
     });
 
   } catch (error) {
-    console.error('\n❌ ERRO:', error);
-    console.log('🔄 Nova tentativa em 5 segundos...\n');
+    console.error('\n❌ Erro:', error);
     setTimeout(connectToWhatsApp, 5000);
   }
 }
 
-// Enviar mensagem
-async function sendWhatsAppMessage(phone, message) {
-  try {
-    if (!isConnected || !sock) {
-      console.error('❌ WhatsApp não conectado!');
-      return false;
-    }
-
-    let formattedPhone = phone.replace(/[^\d]/g, '');
-    if (!formattedPhone.startsWith('55')) {
-      formattedPhone = '55' + formattedPhone;
-    }
-    const jid = formattedPhone + '@s.whatsapp.net';
-
-    await sock.sendMessage(jid, { text: message });
-    console.log(`✅ Mensagem enviada para ${phone}`);
-    return true;
-  } catch (error) {
-    console.error(`❌ Erro ao enviar para ${phone}:`, error);
-    return false;
-  }
-}
-
-// Handler de mensagens
-async function handleIncomingMessage(from, text, fullMessage) {
-  const lowerText = text.toLowerCase().trim();
-
-  if (lowerText === 'menu' || lowerText === 'ajuda') {
-    const menuMessage = `*🤖 Menu de Atendimento*\n\n` +
-      `1️⃣ *status* - Verificar status do pedido\n` +
-      `2️⃣ *produtos* - Ver produtos disponíveis\n` +
-      `3️⃣ *suporte* - Falar com atendente\n` +
-      `4️⃣ *acesso* - Reenviar link de acesso\n\n` +
-      `Digite a palavra-chave desejada.`;
-    await sock.sendMessage(from, { text: menuMessage });
-  }
-  else if (lowerText.includes('status')) {
-    await sock.sendMessage(from, { 
-      text: '🔍 Verificando seu pedido...' 
-    });
-  }
-  else if (lowerText.includes('produtos')) {
-    await sock.sendMessage(from, { 
-      text: '📦 Nossos produtos:\n\n1. Curso - R$ 197\n2. Mentoria - R$ 497\n3. VIP - R$ 997' 
-    });
-  }
-  else if (lowerText.includes('suporte')) {
-    await sock.sendMessage(from, { 
-      text: '👤 Transferindo para atendente...' 
-    });
-  }
-  else {
-    await sock.sendMessage(from, { 
-      text: `Olá! 👋\n\nRecebemos: "${text}"\n\nDigite *menu* para opções.` 
-    });
-  }
-}
-
-// Webhook functions
+// ===== WEBHOOK FUNCTIONS =====
 function verifySignature(body, signature) {
   const calculatedSignature = crypto
     .createHmac('sha1', WEBHOOK_SECRET)
@@ -266,7 +544,6 @@ function saveCustomer(customerData, orderData) {
     firstName: customerData.first_name,
     mobile: customerData.mobile,
     cpf: customerData.CPF,
-    country: customerData.country,
     lastOrder: orderData.order_id,
     createdAt: database.customers.has(customerId) 
       ? database.customers.get(customerId).createdAt 
@@ -295,53 +572,55 @@ function generateMessage(eventType, customer, orderData) {
   const messages = {
     order_approved: {
       text: `🎉 *Parabéns ${firstName}!*\n\n` +
-        `Sua compra foi aprovada!\n\n` +
-        `📦 *Produto:* ${productName}\n` +
-        `🔖 *Pedido:* ${orderData.order_ref}\n\n` +
-        `Acesso: ${orderData.access_url}`,
-      actions: ['boas_vindas']
+        `Sua compra de *${productName}* foi aprovada!\n\n` +
+        `✅ Acesso liberado: ${orderData.access_url || 'Em breve você receberá o acesso'}\n\n` +
+        `Qualquer dúvida, estou aqui! 😊`
+    },
+    abandoned_cart: {
+      text: `Oi ${firstName}! 👋\n\n` +
+        `Vi que você deixou *${productName}* no carrinho.\n\n` +
+        `Posso te ajudar com alguma dúvida? 😊`
     }
   };
   return messages[eventType] || messages.order_approved;
 }
 
-async function startConversation(eventType, customer, orderData) {
-  const conversationId = `${customer.email}_${Date.now()}`;
-  const messageData = generateMessage(eventType, customer, orderData);
-  
-  const conversation = {
-    id: conversationId,
-    customer: customer.email,
-    phone: customer.mobile,
-    eventType,
-    orderId: orderData.order_id,
-    initialMessage: messageData.text,
-    status: 'pending',
-    createdAt: new Date(),
-    messages: [{
-      from: 'bot',
-      text: messageData.text,
-      timestamp: new Date()
-    }]
-  };
-  
-  database.conversations.set(conversationId, conversation);
-  
-  console.log('\n📱 NOVA CONVERSA:');
-  console.log('Cliente:', customer.fullName);
-  console.log('Telefone:', customer.mobile);
-  
-  if (customer.mobile && isConnected) {
-    const sent = await sendWhatsAppMessage(customer.mobile, messageData.text);
-    conversation.whatsappSent = sent;
-    if (sent) console.log('✅ Mensagem enviada');
+async function sendWhatsAppMessage(phone, message) {
+  try {
+    if (!isConnected || !sock) {
+      console.log('⚠️ WhatsApp não conectado');
+      return false;
+    }
+
+    let formattedPhone = phone.replace(/[^\d]/g, '');
+    if (!formattedPhone.startsWith('55')) {
+      formattedPhone = '55' + formattedPhone;
+    }
+    const jid = formattedPhone + '@s.whatsapp.net';
+
+    await sock.sendMessage(jid, { text: message });
+    console.log(`✅ Enviado para ${phone}`);
+    return true;
+  } catch (error) {
+    console.error(`❌ Erro envio:`, error.message);
+    return false;
   }
-  
-  return conversation;
 }
 
-// ENDPOINTS
+async function startConversation(eventType, customer, orderData) {
+  const messageData = generateMessage(eventType, customer, orderData);
+  
+  console.log('\n📱 NOVO EVENTO:', eventType);
+  console.log('Cliente:', customer.fullName);
+  
+  if (customer.mobile && isConnected) {
+    await sendWhatsAppMessage(customer.mobile, messageData.text);
+  } else {
+    console.log('⚠️ Telefone não disponível ou WhatsApp offline');
+  }
+}
 
+// ===== ENDPOINTS =====
 app.post('/webhook', async (req, res) => {
   try {
     const { signature } = req.query;
@@ -353,8 +632,6 @@ app.post('/webhook', async (req, res) => {
     const webhookData = req.body;
     const eventType = webhookData.webhook_event_type || 'order_approved';
     
-    console.log(`\n🔔 Webhook: ${eventType}`);
-    
     const customer = saveCustomer(webhookData.Customer, webhookData);
     saveOrder(webhookData);
     await startConversation(eventType, customer, webhookData);
@@ -364,12 +641,11 @@ app.post('/webhook', async (req, res) => {
       whatsapp_connected: isConnected
     });
   } catch (error) {
-    console.error('❌ Erro:', error);
+    console.error('❌ Webhook error:', error);
     return res.status(500).json({ error: error.message });
   }
 });
 
-// ENDPOINT QR CODE - CORRIGIDO PARA USAR DATA URL
 app.get('/qr', (req, res) => {
   if (qrCodeDataURL) {
     res.send(`
@@ -380,262 +656,44 @@ app.get('/qr', (req, res) => {
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta http-equiv="refresh" content="5">
         <style>
-          * { margin: 0; padding: 0; box-sizing: border-box; }
-          body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-            background: linear-gradient(135deg, #25D366 0%, #128C7E 100%);
-            padding: 20px;
-          }
-          .container {
-            background: white;
-            padding: 2.5rem;
-            border-radius: 24px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            text-align: center;
-            max-width: 450px;
-            width: 100%;
-            animation: slideUp 0.4s ease;
-          }
-          @keyframes slideUp {
-            from { opacity: 0; transform: translateY(20px); }
-            to { opacity: 1; transform: translateY(0); }
-          }
-          h1 {
-            color: #25D366;
-            font-size: 1.8rem;
-            margin-bottom: 0.5rem;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 10px;
-          }
-          .subtitle {
-            color: #666;
-            margin-bottom: 2rem;
-            font-size: 0.95rem;
-          }
-          .qr-wrapper {
-            background: #f8f9fa;
-            padding: 20px;
-            border-radius: 16px;
-            margin: 1.5rem 0;
-            display: inline-block;
-          }
-          .qr-wrapper img {
-            display: block;
-            width: 280px;
-            height: 280px;
-            border-radius: 8px;
-          }
-          .status {
-            background: linear-gradient(135deg, #4caf50 0%, #45a049 100%);
-            color: white;
-            padding: 12px 20px;
-            border-radius: 12px;
-            font-weight: 600;
-            margin: 1.5rem 0;
-            display: inline-block;
-            box-shadow: 0 4px 12px rgba(76, 175, 80, 0.3);
-          }
-          .instructions {
-            background: #f8f9fa;
-            padding: 1.5rem;
-            border-radius: 12px;
-            text-align: left;
-            margin-top: 1.5rem;
-          }
-          .instructions h3 {
-            color: #333;
-            font-size: 1rem;
-            margin-bottom: 1rem;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-          }
-          .instructions ol {
-            margin: 0;
-            padding-left: 1.5rem;
-            color: #555;
-          }
-          .instructions li {
-            margin: 0.75rem 0;
-            line-height: 1.5;
-          }
-          .timer {
-            color: #888;
-            font-size: 0.9rem;
-            margin-top: 1.5rem;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 6px;
-          }
-          .countdown {
-            font-weight: 700;
-            color: #25D366;
-            font-size: 1.1rem;
-          }
-          @media (max-width: 480px) {
-            .container { padding: 1.5rem; }
-            h1 { font-size: 1.5rem; }
-            .qr-wrapper img { width: 240px; height: 240px; }
-          }
+          body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;background:linear-gradient(135deg,#25D366,#128C7E);margin:0}
+          .container{background:#fff;padding:2rem;border-radius:20px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+          h1{color:#25D366;margin-bottom:1rem}
+          img{width:300px;height:300px;border-radius:10px}
+          .timer{color:#666;margin-top:1rem;font-size:14px}
         </style>
       </head>
       <body>
         <div class="container">
-          <h1>
-            <span>📱</span>
-            Conectar WhatsApp
-          </h1>
-          <p class="subtitle">Escaneie o QR Code com seu celular</p>
-          
-          <div class="qr-wrapper">
-            <img src="${qrCodeDataURL}" alt="QR Code WhatsApp">
-          </div>
-          
-          <div class="status">✅ QR Code Ativo</div>
-          
-          <div class="instructions">
-            <h3>📋 Como conectar:</h3>
-            <ol>
-              <li>Abra o <strong>WhatsApp</strong> no celular</li>
-              <li>Toque em <strong>Menu (⋮)</strong> ou <strong>Configurações</strong></li>
-              <li>Toque em <strong>Aparelhos conectados</strong></li>
-              <li>Toque em <strong>"Conectar um aparelho"</strong></li>
-              <li>Aponte a câmera para este QR Code</li>
-            </ol>
-          </div>
-          
-          <div class="timer">
-            ⏰ Atualizando em <span class="countdown" id="countdown">5</span>s
-          </div>
+          <h1>📱 QR Code WhatsApp</h1>
+          <p>Escaneie com seu celular</p>
+          <img src="${qrCodeDataURL}">
+          <p class="timer">⏰ Atualizando em <span id="t">5</span>s</p>
         </div>
-        
         <script>
-          let seconds = 5;
-          const countdownEl = document.getElementById('countdown');
-          const interval = setInterval(() => {
-            seconds--;
-            countdownEl.textContent = seconds;
-            if (seconds <= 0) {
-              clearInterval(interval);
-              location.reload();
-            }
-          }, 1000);
+          let s=5;setInterval(()=>{s--;document.getElementById('t').textContent=s;if(s<=0)location.reload()},1000);
         </script>
       </body>
       </html>
     `);
-  } 
-  else if (isConnected) {
+  } else if (isConnected) {
     res.send(`
       <!DOCTYPE html>
       <html>
-      <head>
-        <title>WhatsApp Conectado</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-          * { margin: 0; padding: 0; box-sizing: border-box; }
-          body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-            background: linear-gradient(135deg, #25D366 0%, #128C7E 100%);
-          }
-          .container {
-            background: white;
-            padding: 3rem;
-            border-radius: 24px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            text-align: center;
-            animation: bounce 2s ease infinite;
-          }
-          @keyframes bounce {
-            0%, 100% { transform: translateY(0); }
-            50% { transform: translateY(-10px); }
-          }
-          .emoji { font-size: 5rem; margin-bottom: 1rem; }
-          h1 { color: #25D366; font-size: 2rem; margin-bottom: 1rem; }
-          p { color: #666; font-size: 1.1rem; }
-          .status-badge {
-            background: #4caf50;
-            color: white;
-            padding: 8px 20px;
-            border-radius: 20px;
-            display: inline-block;
-            margin-top: 1.5rem;
-            font-weight: 600;
-          }
-        </style>
+      <head><title>Conectado</title><meta name="viewport" content="width=device-width, initial-scale=1">
+      <style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;background:linear-gradient(135deg,#25D366,#128C7E);margin:0}.box{background:#fff;padding:3rem;border-radius:20px;text-align:center}h1{color:#25D366;font-size:2rem}.emoji{font-size:5rem}</style>
       </head>
-      <body>
-        <div class="container">
-          <div class="emoji">✅</div>
-          <h1>WhatsApp Conectado!</h1>
-          <p>Seu robô está ativo e funcionando.</p>
-          <div class="status-badge">🟢 Online</div>
-        </div>
-      </body>
+      <body><div class="box"><div class="emoji">✅</div><h1>WhatsApp Conectado!</h1><p>Bot IA ativo</p></div></body>
       </html>
     `);
-  } 
-  else {
+  } else {
     res.send(`
       <!DOCTYPE html>
       <html>
-      <head>
-        <title>Gerando QR Code...</title>
-        <meta http-equiv="refresh" content="2">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-          * { margin: 0; padding: 0; box-sizing: border-box; }
-          body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-          }
-          .container {
-            background: white;
-            padding: 3rem;
-            border-radius: 24px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            text-align: center;
-          }
-          h1 { color: #333; margin-bottom: 1.5rem; }
-          .spinner {
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid #667eea;
-            border-radius: 50%;
-            width: 60px;
-            height: 60px;
-            animation: spin 1s linear infinite;
-            margin: 2rem auto;
-          }
-          @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-          }
-          .attempt { color: #999; font-size: 0.9rem; margin-top: 1rem; }
-        </style>
+      <head><title>Aguardando...</title><meta http-equiv="refresh" content="2"><meta name="viewport" content="width=device-width, initial-scale=1">
+      <style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;background:linear-gradient(135deg,#667eea,#764ba2);margin:0}.box{background:#fff;padding:3rem;border-radius:20px;text-align:center}.spinner{border:4px solid #f3f3f3;border-top:4px solid #667eea;border-radius:50%;width:50px;height:50px;animation:spin 1s linear infinite;margin:2rem auto}@keyframes spin{100%{transform:rotate(360deg)}}</style>
       </head>
-      <body>
-        <div class="container">
-          <h1>⏳ Gerando QR Code...</h1>
-          <div class="spinner"></div>
-          <p>Aguarde enquanto iniciamos a conexão</p>
-          <p class="attempt">Tentativa ${connectionAttempts}/${MAX_ATTEMPTS}</p>
-        </div>
-      </body>
+      <body><div class="box"><h1>⏳ Gerando QR...</h1><div class="spinner"></div></div></body>
       </html>
     `);
   }
@@ -643,142 +701,118 @@ app.get('/qr', (req, res) => {
 
 app.post('/clear-auth', (req, res) => {
   clearAuth();
-  res.json({ success: true, message: 'Auth limpa' });
+  res.json({ success: true, message: 'Auth limpa com sucesso' });
 });
 
 app.get('/status', (req, res) => {
   res.json({
-    status: 'online',
-    whatsapp: {
-      connected: isConnected,
-      hasQrCode: !!qrCodeDataURL,
-      attempts: connectionAttempts
-    },
-    database: {
-      customers: database.customers.size,
-      orders: database.orders.size,
-      conversations: database.conversations.size
-    },
+    whatsapp_connected: isConnected,
+    customers: database.customers.size,
+    conversations: database.conversations.size,
+    ai_conversations: database.aiConversations.size,
     uptime: process.uptime()
   });
 });
 
-app.get('/customers', (req, res) => {
-  const customers = Array.from(database.customers.values());
-  res.json({ total: customers.length, customers });
+app.get('/stats', (req, res) => {
+  let totalMsgs = 0;
+  let aiMsgs = 0;
+  
+  for (const conv of database.aiConversations.values()) {
+    aiMsgs += conv.length;
+  }
+  
+  for (const conv of database.conversations.values()) {
+    totalMsgs += conv.messages?.length || 0;
+  }
+  
+  const autoMsgs = totalMsgs - aiMsgs;
+  const savings = totalMsgs > 0 ? (autoMsgs / totalMsgs * 100).toFixed(1) : '0.0';
+  
+  res.json({
+    total_messages: totalMsgs,
+    auto_responses: autoMsgs,
+    ai_responses: aiMsgs,
+    cost_savings: `${savings}%`,
+    estimated_cost: `${(aiMsgs * 0.0001).toFixed(4)}`,
+    customers_count: database.customers.size
+  });
 });
 
 app.get('/conversations', (req, res) => {
-  const conversations = Array.from(database.conversations.values());
-  res.json({ total: conversations.length, conversations });
+  const convList = [];
+  for (const [phone, conv] of database.conversations.entries()) {
+    convList.push({
+      phone: conv.phone,
+      message_count: conv.messages?.length || 0,
+      last_message: conv.messages?.[conv.messages.length - 1]?.timestamp || null
+    });
+  }
+  res.json({ conversations: convList });
 });
-
-app.head('/webhook', (req, res) => res.status(200).send());
-app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
     <html>
     <head>
-      <title>Robô WhatsApp</title>
+      <title>Robô IA Vendas</title>
       <meta name="viewport" content="width=device-width, initial-scale=1">
       <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-          min-height: 100vh;
-          padding: 2rem;
-        }
-        .container {
-          max-width: 800px;
-          margin: 0 auto;
-          background: white;
-          border-radius: 20px;
-          padding: 2rem;
-          box-shadow: 0 10px 30px rgba(0,0,0,0.3);
-        }
-        h1 { color: #333; margin-bottom: 1rem; }
-        .status-card {
-          background: #f5f5f5;
-          padding: 1rem;
-          border-radius: 10px;
-          margin: 1rem 0;
-        }
-        .status-item {
-          display: flex;
-          justify-content: space-between;
-          padding: 0.5rem 0;
-          border-bottom: 1px solid #ddd;
-        }
-        .status-item:last-child { border-bottom: none; }
-        .badge {
-          padding: 0.25rem 0.75rem;
-          border-radius: 20px;
-          font-size: 0.875rem;
-        }
-        .badge.success { background: #4caf50; color: white; }
-        .badge.danger { background: #f44336; color: white; }
-        .links {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-          gap: 1rem;
-          margin-top: 2rem;
-        }
-        .link-card {
-          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-          color: white;
-          padding: 1.5rem;
-          border-radius: 12px;
-          text-decoration: none;
-          text-align: center;
-          transition: transform 0.2s;
-        }
-        .link-card:hover { transform: translateY(-5px); }
-        .link-card h3 { font-size: 2rem; margin-bottom: 0.5rem; }
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{font-family:sans-serif;background:linear-gradient(135deg,#667eea,#764ba2);min-height:100vh;padding:2rem}
+        .container{max-width:800px;margin:0 auto;background:#fff;border-radius:20px;padding:2rem;box-shadow:0 10px 30px rgba(0,0,0,.3)}
+        h1{color:#333;margin-bottom:1rem}
+        .status{background:#f5f5f5;padding:1rem;border-radius:10px;margin:1rem 0}
+        .item{display:flex;justify-content:space-between;padding:.5rem 0;border-bottom:1px solid #ddd}
+        .item:last-child{border:none}
+        .badge{padding:.25rem .75rem;border-radius:20px;font-size:.875rem}
+        .success{background:#4caf50;color:#fff}
+        .danger{background:#f44336;color:#fff}
+        .links{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1rem;margin-top:2rem}
+        a{background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;padding:1.5rem;border-radius:12px;text-decoration:none;text-align:center;display:block;transition:transform .2s}
+        a:hover{transform:translateY(-5px)}
+        .info{background:#e3f2fd;padding:1rem;border-radius:10px;margin-top:1rem;font-size:.875rem}
       </style>
     </head>
     <body>
       <div class="container">
-        <h1>🤖 Robô de Atendimento WhatsApp</h1>
-        <p>Sistema ativo!</p>
+        <h1>🤖 Robô IA para Vendas</h1>
+        <p>Sistema híbrido: Respostas automáticas + IA conversacional</p>
         
-        <div class="status-card">
-          <h3>📊 Status</h3>
-          <div class="status-item">
+        <div class="status">
+          <div class="item">
             <span>WhatsApp</span>
             <span class="badge ${isConnected ? 'success' : 'danger'}">
-              ${isConnected ? '✅ Conectado' : '❌ Desconectado'}
+              ${isConnected ? '✅ Online' : '❌ Offline'}
             </span>
           </div>
-          <div class="status-item">
+          <div class="item">
             <span>Clientes</span>
             <span>${database.customers.size}</span>
           </div>
-          <div class="status-item">
-            <span>Conversas</span>
+          <div class="item">
+            <span>Conversas IA</span>
+            <span>${database.aiConversations.size}</span>
+          </div>
+          <div class="item">
+            <span>Conversas Total</span>
             <span>${database.conversations.size}</span>
           </div>
         </div>
         
+        <div class="info">
+          <strong>💡 Como funciona:</strong><br>
+          • Respostas automáticas para perguntas comuns (GRÁTIS)<br>
+          • IA conversacional para dúvidas complexas (custo mínimo)<br>
+          • Sistema econômico com gpt-3.5-turbo
+        </div>
+        
         <div class="links">
-          <a href="/qr" class="link-card">
-            <h3>📱</h3>
-            <p>Conectar WhatsApp</p>
-          </a>
-          <a href="/status" class="link-card">
-            <h3>📊</h3>
-            <p>Status</p>
-          </a>
-          <a href="/customers" class="link-card">
-            <h3>👥</h3>
-            <p>Clientes</p>
-          </a>
-          <a href="/conversations" class="link-card">
-            <h3>💬</h3>
-            <p>Conversas</p>
-          </a>
+          <a href="/qr">📱 Conectar</a>
+          <a href="/status">📊 Status</a>
+          <a href="/stats">💰 Economia</a>
+          <a href="/conversations">💬 Conversas</a>
         </div>
       </div>
     </body>
@@ -786,26 +820,32 @@ app.get('/', (req, res) => {
   `);
 });
 
-// Iniciar
+// Carregar database ao iniciar
+loadDatabase();
+
+// Iniciar servidor
 app.listen(PORT, () => {
   console.log(`
-  ╔════════════════════════════════════════╗
-  ║   🤖 ROBÔ DE ATENDIMENTO WHATSAPP     ║
-  ╚════════════════════════════════════════╝
+  ╔══════════════════════════════════════╗
+  ║   🤖 ROBÔ IA VENDAS - ECONÔMICO     ║
+  ╚══════════════════════════════════════╝
   
   📡 Servidor: http://localhost:${PORT}
   📱 QR Code: http://localhost:${PORT}/qr
+  💰 Stats: http://localhost:${PORT}/stats
+  💬 Conversas: http://localhost:${PORT}/conversations
   
-  ⏳ Iniciando WhatsApp...
+  💡 ESTRATÉGIA DE ECONOMIA:
+  ✅ Respostas automáticas (grátis)
+  ✅ IA apenas quando necessário
+  ✅ gpt-3.5-turbo (10x mais barato)
+  ✅ Histórico curto (economia de tokens)
+  ✅ Rate limiting (10 msgs/min)
+  ✅ Persistência em arquivo JSON
+  
+  🚀 PRONTO PARA USO!
   `);
   
+  // Conectar ao WhatsApp
   connectToWhatsApp();
-});
-
-process.on('uncaughtException', (error) => {
-  console.error('❌ Erro:', error);
-});
-
-process.on('unhandledRejection', (error) => {
-  console.error('❌ Promise rejeitada:', error);
 });
