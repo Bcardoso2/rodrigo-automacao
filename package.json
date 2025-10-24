@@ -1,14 +1,16 @@
 {
   "name": "robo-atendimento-whatsapp",
   "version": "1.0.0",
-  "description": "Robô de atendimento automático via WhatsApp com webhooks Kiwify",
+  "description": "Robô de atendimento automático via WhatsApp com IA conversacional e webhooks Kiwify",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "clean": "rm -rf baileys_auth node_modules package-lock.json",
+    "clean": "rm -rf baileys_auth node_modules package-lock.json database.json",
     "reset": "npm run clean && npm install",
-    "clear-auth": "rm -rf baileys_auth && echo 'Autenticação limpa! Reinicie o servidor.'",
+    "clear-auth": "rm -rf baileys_auth && echo '🧹 Autenticação limpa! Reinicie o servidor.'",
+    "clear-db": "rm -rf database.json && echo '🗑️ Database limpo!'",
+    "backup": "cp database.json database.backup.json && echo '💾 Backup criado!'",
     "test": "node -e \"console.log('✅ Node.js funcionando!')\"",
     "check": "node --version && npm --version"
   },
@@ -18,19 +20,24 @@
     "webhook",
     "kiwify",
     "atendimento",
-    "automacao"
+    "automacao",
+    "openai",
+    "chatbot",
+    "ia",
+    "vendas"
   ],
   "author": "Bricio Cardoso",
   "license": "MIT",
   "dependencies": {
-  "@whiskeysockets/baileys": "^6.7.8",
-  "@hapi/boom": "^10.0.1",
-  "express": "^4.21.1",
-  "body-parser": "^1.20.3",
-  "pino": "^9.4.0",
-  "qrcode": "^1.5.3",
-  "qrcode-terminal": "^0.12.0"
-},
+    "@whiskeysockets/baileys": "^6.7.8",
+    "@hapi/boom": "^10.0.1",
+    "express": "^4.21.1",
+    "body-parser": "^1.20.3",
+    "pino": "^9.4.0",
+    "qrcode": "^1.5.3",
+    "qrcode-terminal": "^0.12.0",
+    "openai": "^4.67.3"
+  },
   "devDependencies": {
     "nodemon": "^3.1.7"
   },
