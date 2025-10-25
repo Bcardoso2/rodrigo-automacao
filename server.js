@@ -192,6 +192,11 @@ const AUTO_RESPONSES = {
   frequencia: {
     keywords: ['frequencia', 'quantas ofertas', 'quando', 'todo dia', 'horário'],
     response: () => `Toda semana, de *Terça a Sábado*, o grupo ferve! 🔥\n\nSão mais de 40 novas oportunidades todos os dias pra você analisar.`
+  },
+
+  comissao_taxas: {
+    keywords: ['comissão', 'comissao', 'taxa', 'custo adicional', 'cobram', 'outros custos', 'valor extra'],
+    response: () => `Boa pergunta! Transparência é fundamental. 📊\n\n*Custos da Autogiro:*\n\n1️⃣ *Assinatura mensal:* R$ 79,90 (acesso às ofertas)\n\n2️⃣ *Comissão por carro arrematado:* 4% sobre o valor do veículo\n\nExemplo prático:\n• Carro arrematado por R$ 30.000\n• Comissão = R$ 1.200 (4%)\n• Total investido: R$ 31.200\n\n💡 Mesmo com a comissão, você ainda economiza MUITO, já que os descontos chegam a 40% da FIPE!\n\nAlguma dúvida sobre os custos?`
   }
 };
 
@@ -256,12 +261,18 @@ PRODUTO ÚNICO:
 - É SEGURO. Tudo tem Laudo Cautelar antes da compra.
 - NÃO TEM FIDELIDADE. Cancela quando quiser.
 
+CUSTOS ADICIONAIS:
+- Assinatura: R$ 79,90/mês
+- Comissão: 4% sobre o valor do veículo arrematado
+- Exemplo: Carro de R$ 30.000 = comissão de R$ 1.200
+
 OBJETIVO: Tirar dúvidas e convencer o cliente a assinar.
 
 REGRAS IMPORTANTES:
 - Seja consultivo e gere confiança.
 - Respostas curtas (máximo 3-4 linhas).
 - Reforce sempre: "Não é leilão" e "Tem laudo cautelar".
+- Quando perguntarem sobre custos, seja transparente sobre a comissão de 4%.
 - Se cliente estiver pronto para comprar, envie: [LINK_VIP]
 - Use emojis de forma profissional (🚗, 🛡️, 💎, ✅, 💰).`;
 
@@ -756,6 +767,7 @@ app.get('/', (req, res) => {
         a{background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;padding:1.5rem;border-radius:12px;text-decoration:none;text-align:center;display:block;transition:transform .2s}
         a:hover{transform:translateY(-5px)}
         .info{background:#e3f2fd;padding:1rem;border-radius:10px;margin-top:1rem;font-size:.875rem}
+        .warning{background:#fff3cd;padding:1rem;border-radius:10px;margin-top:1rem;font-size:.875rem;border-left:4px solid #ffc107}
       </style>
     </head>
     <body>
@@ -788,7 +800,15 @@ app.get('/', (req, res) => {
           <strong>💡 Como funciona:</strong><br>
           • Respostas automáticas para perguntas comuns (GRÁTIS)<br>
           • IA conversacional para dúvidas complexas (custo mínimo)<br>
-          • Sistema econômico com gpt-3.5-turbo
+          • Sistema econômico com gpt-3.5-turbo<br>
+          • Informações transparentes sobre comissão de 4%
+        </div>
+        
+        <div class="warning">
+          <strong>💰 Estrutura de custos Autogiro:</strong><br>
+          • Assinatura: R$ 79,90/mês<br>
+          • Comissão: 4% sobre valor arrematado<br>
+          • O bot informa isso automaticamente aos clientes
         </div>
         
         <div class="links">
@@ -825,6 +845,11 @@ app.listen(PORT, () => {
   ✅ Histórico curto (economia de tokens)
   ✅ Rate limiting (10 msgs/min)
   ✅ Persistência em arquivo JSON
+  
+  💰 CUSTOS AUTOGIRO:
+  ✅ Assinatura: R$ 79,90/mês
+  ✅ Comissão: 4% sobre valor arrematado
+  ✅ Bot informa automaticamente aos clientes
   
   🚀 PRONTO PARA USO!
   `);
