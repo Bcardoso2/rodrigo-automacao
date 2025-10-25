@@ -18,9 +18,9 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Configurações
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'YOUR_SECRET_TOKEN';
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'YOUR_SECRET_TOKEN'; // <-- MUDE AQUI
 const AUTH_FOLDER = './baileys_auth';
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'sua-chave-aqui';
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'sua-chave-aqui'; // <-- MUDE AQUI
 const DB_FILE = './database.json';
 
 // ESTRATÉGIA DE ECONOMIA:
@@ -56,28 +56,14 @@ const database = {
 // Rate Limiting
 const messageTimestamps = new Map();
 
-// PRODUTOS (PERSONALIZE AQUI!)
+// PRODUTOS (ATUALIZADO PARA AUTOGIRO)
 const PRODUCTS = {
-  curso: {
-    id: 'curso',
-    name: 'Curso Completo',
-    price: 197,
-    description: 'Aprenda do zero ao avançado',
-    link: 'https://pay.kiwify.com.br/seu-link-curso'
-  },
-  mentoria: {
-    id: 'mentoria',
-    name: 'Mentoria Individual',
-    price: 497,
-    description: 'Mentoria personalizada 1:1',
-    link: 'https://pay.kiwify.com.br/seu-link-mentoria'
-  },
   vip: {
     id: 'vip',
-    name: 'Pacote VIP',
-    price: 997,
-    description: 'Curso + Mentoria + Bônus',
-    link: 'https://pay.kiwify.com.br/seu-link-vip'
+    name: 'Comunidade VIP Autogiro',
+    price: 79.90,
+    description: 'Acesso a 40+ ofertas diárias de carros/motos até 40% abaixo da FIPE.',
+    link: 'https://pay.kiwify.com.br/qAAxyjd' // SEU LINK ATUALIZADO
   }
 };
 
@@ -166,59 +152,49 @@ function clearAuth() {
 
 // ===== SISTEMA HÍBRIDO: RESPOSTAS PRONTAS + IA =====
 
-// RESPOSTAS AUTOMÁTICAS (SEM CUSTO!)
+// RESPOSTAS AUTOMÁTICAS (ATUALIZADO COM TOM HUMANO!)
 const AUTO_RESPONSES = {
   saudacao: {
     keywords: ['oi', 'olá', 'ola', 'hey', 'bom dia', 'boa tarde', 'boa noite', 'ola'],
-    response: (name) => `Olá${name ? ' ' + name : ''}! 👋\n\nSeja bem-vindo! Sou o assistente virtual da Digital Expert.\n\nEstou aqui para te ajudar a escolher o melhor produto para você. Como posso te ajudar hoje? 😊`
+    response: (name) => `Opa, ${name ? name : 'tudo bem'}? 👋\n\nAqui é o assistente da *Autogiro*. Seja bem-vindo!\n\nNós ajudamos pessoas a encontrar carros e motos com até 40% abaixo da FIPE (sem ser leilão e com laudo aprovado!).\n\nComo posso te ajudar hoje? 😊`
+  },
+
+  info_produto: {
+    keywords: ['produtos', 'produto', 'o que vende', 'opções', 'catalogo', 'preço', 'preco', 'valor', 'quanto custa', 'comprar', 'quero', 'link', 'assinar', 'vip', 'como funciona', 'me interessa'],
+    response: () => `Claro! Nós temos a *Comunidade VIP Autogiro*. 💎\n\nFunciona assim: você entra no grupo e recebe mais de *40 ofertas todos os dias* de carros e motos com descontos absurdos (até 40% abaixo da FIPE).\n\n💰 O valor normal é R$ 199,90, mas hoje está por apenas *R$ 79,90 por mês*.\n\nE o melhor:\n✅ São carros bons (todos com Laudo Cautelar)\n✅ Nosso time negocia pra você\n✅ *Sem fidelidade*, você pode sair quando quiser.\n\nO link pra entrar é este aqui: \n${PRODUCTS.vip.link}\n\nFicou alguma dúvida? Só mandar!`
   },
   
-  produtos: {
-    keywords: ['produtos', 'produto', 'o que vende', 'o que tem', 'opções', 'opcoes', 'catalogo'],
-    response: () => `📦 *Nossos Produtos:*\n\n` +
-      `1️⃣ *Curso Completo* - R$ 197\n` +
-      `   → Do zero ao avançado\n\n` +
-      `2️⃣ *Mentoria Individual* - R$ 497\n` +
-      `   → Atendimento personalizado\n\n` +
-      `3️⃣ *Pacote VIP* - R$ 997\n` +
-      `   → Tudo incluído + bônus\n\n` +
-      `Digite o *número* do produto para saber mais! 🎯`
+  origem_carros: {
+    keywords: ['de onde vem', 'fonte', 'origem', 'retomada', 'financiamento'],
+    response: () => `Essa é a mágica do negócio! 🪄\n\nNós temos acesso direto à *fonte primária* de veículos de retomada de financiamento. São carros que nem chegam a ir para o mercado ou leilão, por isso o preço é tão bom. 🚗`
   },
   
-  preco: {
-    keywords: ['preço', 'preco', 'valor', 'quanto custa', 'quanto é', 'quanto e', 'valores'],
-    response: () => `💰 *Valores:*\n\n` +
-      `• Curso: *R$ 197* (ou 12x de R$ 19,70)\n` +
-      `• Mentoria: *R$ 497* (ou 12x de R$ 49,70)\n` +
-      `• VIP: *R$ 997* (ou 12x de R$ 99,70)\n\n` +
-      `Qual te interessa mais? 😊`
+  leilao_sinistro: {
+    keywords: ['leilão', 'leilao', 'sinistro', 'batido', 'batida', 'problema'],
+    response: () => `Aqui não! Pode ficar 100% tranquilo. \n\n*NÃO* trabalhamos com leilão nem com carros sinistrados (aqueles que já tiveram batidas feias ou problemas sérios).\n\nNosso foco é só em carro bom e de procedência. 👍`
+  },
+
+  seguranca: {
+    keywords: ['seguro', 'garantia', 'laudo', 'cautelar', 'confiar', 'confiável', 'confiavel'],
+    response: () => `Com certeza. Segurança aqui é regra número 1. 🛡️\n\nFunciona assim: *NENHUM* carro é comprado antes de ter um *Laudo Cautelar APROVADO*.\n\nVocê sempre recebe o laudo e todas as fotos antes de tomar qualquer decisão. Transparência total! 😉`
+  },
+
+  fidelidade: {
+    keywords: ['fidelidade', 'contrato', 'cancelar', 'sem fidelidade', 'multa'],
+    response: () => `Não, de jeito nenhum! 🥳\n\nAqui você tem liberdade total. Você pode cancelar a assinatura no momento que quiser, sem multa e sem nenhuma burocracia. O risco é zero. `
+  },
+
+  iniciante: {
+    keywords: ['iniciante', 'ajuda', 'suporte', 'primeira vez', 'como faço'],
+    response: () => `Com certeza! A comunidade é perfeita pra quem tá começando.\n\nVocê não fica sozinho. Temos um *atendimento humanizado* no WhatsApp que vai te pegar pela mão e ajudar em tudo: analisar o laudo, negociar o valor, até a entrega do carro. 🤝`
   },
   
-  pagamento: {
-    keywords: ['pagar', 'pagamento', 'como pago', 'formas de pagamento', 'cartão', 'cartao', 'pix', 'boleto'],
-    response: () => `💳 *Formas de Pagamento:*\n\n` +
-      `✅ PIX (aprovação instantânea)\n` +
-      `✅ Cartão de crédito (até 12x)\n` +
-      `✅ Boleto bancário\n\n` +
-      `Qual produto você quer? Te envio o link! 🔗`
-  },
-  
-  garantia: {
-    keywords: ['garantia', 'devolução', 'devolucao', 'reembolso', 'arrependimento', 'seguro'],
-    response: () => `🛡️ *Garantia de 7 dias!*\n\n` +
-      `Se não gostar, devolvemos 100% do seu dinheiro. Sem perguntas, sem burocracia!\n\n` +
-      `Você não tem nada a perder. Que tal garantir sua vaga? 😊`
-  },
-  
-  comprar: {
-    keywords: ['comprar', 'quero', 'me interessa', 'vou levar', 'fechou', 'bora', 'link', 'adquirir'],
-    response: () => `🎉 Que ótimo!\n\nQual produto você escolheu?\n\n` +
-      `1️⃣ Curso (R$ 197)\n` +
-      `2️⃣ Mentoria (R$ 497)\n` +
-      `3️⃣ VIP (R$ 997)\n\n` +
-      `Digite o número! 🚀`
+  frequencia: {
+    keywords: ['frequencia', 'quantas ofertas', 'quando', 'todo dia', 'horário'],
+    response: () => `Toda semana, de *Terça a Sábado*, o grupo ferve! 🔥\n\nSão mais de 40 novas oportunidades todos os dias pra você analisar.`
   }
 };
+
 
 // Detectar intenção (sem custo de IA)
 function detectIntent(message) {
@@ -230,7 +206,7 @@ function detectIntent(message) {
     }
   }
   
-  // Detectar se está escolhendo produto
+  // Detectar se está escolhendo produto (não se aplica mais tanto, mas mantemos)
   if (/^[1-3]$/.test(lowerMsg)) {
     return 'escolha_produto';
   }
@@ -240,33 +216,25 @@ function detectIntent(message) {
 
 // Handler de escolha de produto
 function handleProductSelection(choice, customerData = {}) {
-  const products = {
-    '1': PRODUCTS.curso,
-    '2': PRODUCTS.mentoria,
-    '3': PRODUCTS.vip
-  };
-  
-  const product = products[choice];
-  if (!product) {
-    return `Opção inválida! 😅\n\nDigite:\n1️⃣ para Curso\n2️⃣ para Mentoria\n3️⃣ para VIP`;
-  }
+  // Adaptado para produto único
+  const product = PRODUCTS.vip;
   
   const name = customerData.firstName ? ` ${customerData.firstName}` : '';
   
   return `🎯 *${product.name}*${name}!\n\n` +
     `${product.description}\n\n` +
     `💰 Investimento: *R$ ${product.price}*\n` +
-    `💳 Ou 12x de R$ ${(product.price / 12).toFixed(2)}\n\n` +
     `🔗 *Link de pagamento:*\n${product.link}\n\n` +
     `✅ Acesso liberado automaticamente após aprovação!\n` +
-    `🛡️ Garantia de 7 dias - risco zero!\n\n` +
+    `🛡️ Sem fidelidade - cancele quando quiser!\n\n` +
     `Qualquer dúvida, estou aqui! 😊`;
 }
 
 // Gerar resposta automática
 function getAutoResponse(intent, customerData = {}, message = '') {
   if (intent === 'escolha_produto') {
-    return handleProductSelection(message.trim(), customerData);
+    // Se digitou "1", "2" ou "3", apenas mande o link principal
+    return handleProductSelection('1', customerData);
   }
   
   const responseData = AUTO_RESPONSES[intent];
@@ -277,24 +245,25 @@ function getAutoResponse(intent, customerData = {}, message = '') {
 
 // ===== IA ECONÔMICA (só quando necessário) =====
 
-// Prompt CURTO para economizar tokens
-const AI_SYSTEM_PROMPT = `Você é vendedor consultivo da Digital Expert. Seja breve, natural e amigável.
+// Prompt CURTO para economizar tokens (ATUALIZADO AUTOGIRO)
+const AI_SYSTEM_PROMPT = `Você é um especialista em vendas da Autogiro. Seja breve, direto e confiável.
 
-PRODUTOS:
-1. Curso Completo (R$197) - Para iniciantes que querem aprender do zero
-2. Mentoria Individual (R$497) - Atendimento personalizado 1:1
-3. Pacote VIP (R$997) - Completo: Curso + Mentoria + Bônus exclusivos
+PRODUTO ÚNICO:
+- Nome: Comunidade VIP Autogiro
+- Preço: R$ 79,90/mês (Promocional)
+- O que é: Acesso a 40+ ofertas diárias de carros/motos (até 40% abaixo da FIPE).
+- NÃO É LEILÃO. É retomada de financiamento (fonte primária).
+- É SEGURO. Tudo tem Laudo Cautelar antes da compra.
+- NÃO TEM FIDELIDADE. Cancela quando quiser.
 
-OBJETIVO: Conversar naturalmente, identificar a necessidade do cliente e recomendar o produto ideal.
+OBJETIVO: Tirar dúvidas e convencer o cliente a assinar.
 
 REGRAS IMPORTANTES:
-- Seja consultivo, NUNCA agressivo
-- Faça perguntas para entender a necessidade
-- Respostas curtas (máximo 3-4 linhas)
-- Use emojis com moderação
-- Se cliente estiver pronto para comprar, envie: [LINK_CURSO], [LINK_MENTORIA] ou [LINK_VIP]
-- Foque em ajudar, não em empurrar venda
-- Seja educado e profissional sempre`;
+- Seja consultivo e gere confiança.
+- Respostas curtas (máximo 3-4 linhas).
+- Reforce sempre: "Não é leilão" e "Tem laudo cautelar".
+- Se cliente estiver pronto para comprar, envie: [LINK_VIP]
+- Use emojis de forma profissional (🚗, 🛡️, 💎, ✅, 💰).`;
 
 // Chamar IA (APENAS quando necessário)
 async function getAIResponse(customerPhone, customerMessage, customerData = {}) {
@@ -338,9 +307,9 @@ async function getAIResponse(customerPhone, customerMessage, customerData = {}) 
 
     // Substituir placeholders por links
     let response = aiResponse
-      .replace(/\[LINK_CURSO\]/g, PRODUCTS.curso.link)
-      .replace(/\[LINK_MENTORIA\]/g, PRODUCTS.mentoria.link)
-      .replace(/\[LINK_VIP\]/g, PRODUCTS.vip.link);
+      .replace(/\[LINK_VIP\]/g, PRODUCTS.vip.link)
+      .replace(/\[LINK_CURSO\]/g, PRODUCTS.vip.link) // Fallback
+      .replace(/\[LINK_MENTORIA\]/g, PRODUCTS.vip.link); // Fallback
 
     return response;
 
@@ -459,7 +428,7 @@ async function connectToWhatsApp() {
       logger: pino({ level: 'silent' }),
       printQRInTerminal: true,
       auth: state,
-      browser: ['Robô Vendas', 'Chrome', '1.0.0'],
+      browser: ['Robô Autogiro', 'Chrome', '1.0.0'],
       defaultQueryTimeoutMs: undefined,
       getMessage: async (key) => ({ conversation: '' })
     });
@@ -498,7 +467,7 @@ async function connectToWhatsApp() {
       else if (connection === 'open') {
         console.log('\n✅ WHATSAPP CONECTADO');
         console.log('📱', sock.user?.id);
-        console.log('🤖 Bot IA conversacional ativo!\n');
+        console.log('🤖 Bot IA Autogiro ativo!\n');
         
         isConnected = true;
         qrCode = null;
@@ -565,16 +534,29 @@ function saveOrder(orderData) {
   });
 }
 
+// ATUALIZADO COM LINK DE SUPORTE
 function generateMessage(eventType, customer, orderData) {
   const firstName = customer.firstName || 'Cliente';
-  const productName = orderData.Product?.product_name || 'Produto';
+  const productName = orderData.Product?.product_name || 'Comunidade VIP';
   
+  // Link direto para o seu Robô de Suporte Autogiro
+  const linkSuporte = 'https://wa.me/5512996232861'; 
+
   const messages = {
     order_approved: {
       text: `🎉 *Parabéns ${firstName}!*\n\n` +
-        `Sua compra de *${productName}* foi aprovada!\n\n` +
-        `✅ Acesso liberado: ${orderData.access_url || 'Em breve você receberá o acesso'}\n\n` +
-        `Qualquer dúvida, estou aqui! 😊`
+        `Sua compra da *${productName}* foi aprovada!\n\n` +
+        
+        // 1. Link de Acesso à Plataforma (vem da Kiwify)
+        `✅ *Acesse a plataforma aqui:*\n${orderData.access_url || 'Em breve você receberá o acesso por e-mail'}\n\n` + 
+        
+        `--- \n\n` +
+        
+        // 2. Link para o Robô de Suporte
+        `🤖 *SUPORTE AUTOGIRO*\n` +
+        `Agora, para qualquer dúvida sobre o produto ou sobre as ofertas, por favor, chame nosso *Robô de Suporte*.\n\n` +
+        `*Acesse o link:*\n👉 ${linkSuporte}\n\n` +
+        `Basta clicar e enviar um "Olá" para o nosso time de suporte! 👋`
     },
     abandoned_cart: {
       text: `Oi ${firstName}! 👋\n\n` +
@@ -584,6 +566,7 @@ function generateMessage(eventType, customer, orderData) {
   };
   return messages[eventType] || messages.order_approved;
 }
+
 
 async function sendWhatsAppMessage(phone, message) {
   try {
@@ -683,7 +666,7 @@ app.get('/qr', (req, res) => {
       <head><title>Conectado</title><meta name="viewport" content="width=device-width, initial-scale=1">
       <style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;background:linear-gradient(135deg,#25D366,#128C7E);margin:0}.box{background:#fff;padding:3rem;border-radius:20px;text-align:center}h1{color:#25D366;font-size:2rem}.emoji{font-size:5rem}</style>
       </head>
-      <body><div class="box"><div class="emoji">✅</div><h1>WhatsApp Conectado!</h1><p>Bot IA ativo</p></div></body>
+      <body><div class="box"><div class="emoji">✅</div><h1>WhatsApp Conectado!</h1><p>Bot IA Autogiro ativo</p></div></body>
       </html>
     `);
   } else {
@@ -734,7 +717,7 @@ app.get('/stats', (req, res) => {
     auto_responses: autoMsgs,
     ai_responses: aiMsgs,
     cost_savings: `${savings}%`,
-    estimated_cost: `${(aiMsgs * 0.0001).toFixed(4)}`,
+    estimated_cost: `${(aiMsgs * 0.0001).toFixed(4)}`, // Custo estimado baixo
     customers_count: database.customers.size
   });
 });
@@ -756,7 +739,7 @@ app.get('/', (req, res) => {
     <!DOCTYPE html>
     <html>
     <head>
-      <title>Robô IA Vendas</title>
+      <title>Robô IA Autogiro</title>
       <meta name="viewport" content="width=device-width, initial-scale=1">
       <style>
         *{margin:0;padding:0;box-sizing:border-box}
@@ -777,7 +760,7 @@ app.get('/', (req, res) => {
     </head>
     <body>
       <div class="container">
-        <h1>🤖 Robô IA para Vendas</h1>
+        <h1>🤖 Robô IA Autogiro</h1>
         <p>Sistema híbrido: Respostas automáticas + IA conversacional</p>
         
         <div class="status">
@@ -827,7 +810,7 @@ loadDatabase();
 app.listen(PORT, () => {
   console.log(`
   ╔══════════════════════════════════════╗
-  ║   🤖 ROBÔ IA VENDAS - ECONÔMICO     ║
+  ║    🤖 ROBÔ IA AUTOGIRO - ECONÔMICO   ║
   ╚══════════════════════════════════════╝
   
   📡 Servidor: http://localhost:${PORT}
