@@ -1,4 +1,4 @@
-// server.js - IA ECONÔMICA (Gasta o mínimo possível)
+// server.js - IA ECONÔMICA COM MELHORIAS (Gasta o mínimo possível)
 const express = require('express');
 const bodyParser = require('body-parser');
 const crypto = require('crypto');
@@ -50,7 +50,8 @@ const database = {
   orders: new Map(),
   conversations: new Map(),
   aiConversations: new Map(),
-  activeChats: new Map()
+  activeChats: new Map(),
+  pendingPixPayments: new Map() // NOVO: Controlar PIX pendentes
 };
 
 // Rate Limiting
@@ -79,6 +80,7 @@ function loadDatabase() {
       database.customers = new Map(data.customers || []);
       database.orders = new Map(data.orders || []);
       database.conversations = new Map(data.conversations || []);
+      database.pendingPixPayments = new Map(data.pendingPixPayments || []);
       console.log('💾 Database carregado');
     }
   } catch (error) {
@@ -91,7 +93,8 @@ function saveDatabase() {
     const data = {
       customers: Array.from(database.customers.entries()),
       orders: Array.from(database.orders.entries()),
-      conversations: Array.from(database.conversations.entries())
+      conversations: Array.from(database.conversations.entries()),
+      pendingPixPayments: Array.from(database.pendingPixPayments.entries())
     };
     fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
     console.log('💾 Database salvo');
@@ -126,6 +129,157 @@ function checkRateLimit(phone) {
   recent.push(now);
   messageTimestamps.set(phone, recent);
   return true;
+}
+
+// ===== FUNÇÕES DE FORMATAÇÃO DE TELEFONE =====
+
+/**
+ * Gera variações do número de telefone (com e sem 9º dígito)
+ * @param {string} phone - Número original
+ * @returns {Array<string>} - Array com variações do número
+ */
+function getPhoneVariations(phone) {
+  // Limpa o número
+  let cleanPhone = phone.replace(/\D/g, '');
+  
+  // Remove código do país se existir
+  if (cleanPhone.startsWith('55')) {
+    cleanPhone = cleanPhone.substring(2);
+  }
+  
+  // Se tiver 11 dígitos (DDD + 9 + 8 dígitos)
+  if (cleanPhone.length === 11 && cleanPhone[2] === '9') {
+    const ddd = cleanPhone.substring(0, 2);
+    const withoutNine = ddd + cleanPhone.substring(3); // Remove o 9
+    return [
+      '55' + cleanPhone,      // Com 9º dígito
+      '55' + withoutNine      // Sem 9º dígito
+    ];
+  }
+  
+  // Se tiver 10 dígitos (DDD + 8 dígitos)
+  if (cleanPhone.length === 10) {
+    const ddd = cleanPhone.substring(0, 2);
+    const withNine = ddd + '9' + cleanPhone.substring(2); // Adiciona o 9
+    return [
+      '55' + cleanPhone,      // Sem 9º dígito
+      '55' + withNine         // Com 9º dígito
+    ];
+  }
+  
+  // Caso padrão: retorna com código do país
+  if (!cleanPhone.startsWith('55')) {
+    cleanPhone = '55' + cleanPhone;
+  }
+  
+  return [cleanPhone];
+}
+
+/**
+ * Envia mensagem para todas as variações do número
+ * @param {string} phone - Número original
+ * @param {string} message - Mensagem a enviar
+ */
+async function sendToAllPhoneVariations(phone, message) {
+  const variations = getPhoneVariations(phone);
+  const results = [];
+  
+  console.log(`📞 Enviando para variações: ${variations.join(', ')}`);
+  
+  for (const phoneVariation of variations) {
+    try {
+      const success = await sendWhatsAppMessage(phoneVariation, message);
+      results.push({ phone: phoneVariation, success });
+      
+      if (success) {
+        console.log(`✅ Enviado com sucesso para: ${phoneVariation}`);
+      } else {
+        console.log(`⚠️ Falha ao enviar para: ${phoneVariation}`);
+      }
+      
+      // Aguarda 2 segundos entre envios para evitar spam
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    } catch (error) {
+      console.error(`❌ Erro ao enviar para ${phoneVariation}:`, error.message);
+      results.push({ phone: phoneVariation, success: false });
+    }
+  }
+  
+  return results;
+}
+
+// ===== CONTROLE DE PIX PENDENTE =====
+
+/**
+ * Agenda follow-up para PIX não confirmado em 5 minutos
+ * @param {string} orderId - ID do pedido
+ * @param {Object} customer - Dados do cliente
+ * @param {Object} orderData - Dados do pedido
+ */
+function schedulePendingPixFollowup(orderId, customer, orderData) {
+  const FIVE_MINUTES = 5 * 60 * 1000; // 5 minutos em milissegundos
+  
+  console.log(`⏰ Agendando follow-up PIX para pedido ${orderId} em 5 minutos`);
+  
+  // Salva o pedido pendente
+  database.pendingPixPayments.set(orderId, {
+    customer,
+    orderData,
+    createdAt: new Date(),
+    followupScheduled: true
+  });
+  
+  // Agenda o follow-up
+  setTimeout(async () => {
+    await handlePendingPixFollowup(orderId, customer, orderData);
+  }, FIVE_MINUTES);
+}
+
+/**
+ * Executa o follow-up de PIX pendente após 5 minutos
+ */
+async function handlePendingPixFollowup(orderId, customer, orderData) {
+  try {
+    // Verifica se o pagamento foi aprovado nesse meio tempo
+    const order = database.orders.get(orderId);
+    if (order && order.payment_status === 'approved') {
+      console.log(`✅ PIX ${orderId} já foi pago. Follow-up cancelado.`);
+      database.pendingPixPayments.delete(orderId);
+      return;
+    }
+    
+    console.log(`📨 Enviando follow-up de PIX pendente para ${customer.firstName || customer.fullName}`);
+    
+    const firstName = customer.firstName || 'Cliente';
+    const message = `Oi ${firstName}! 👋\n\n` +
+      `Notei que você gerou um PIX para a *Comunidade VIP Autogiro*, mas o pagamento ainda não foi confirmado.\n\n` +
+      `⏰ O PIX expira em breve!\n\n` +
+      `Se você teve algum problema ou ficou com dúvida, estou aqui pra te ajudar. É só me chamar! 😊\n\n` +
+      `Caso já tenha pago, por favor desconsidere essa mensagem. O sistema demora alguns minutos pra confirmar. ✅`;
+    
+    // Envia para todas as variações do telefone
+    if (customer.mobile) {
+      await sendToAllPhoneVariations(customer.mobile, message);
+    }
+    
+    // Remove da lista de pendentes
+    database.pendingPixPayments.delete(orderId);
+    saveDatabase();
+    
+  } catch (error) {
+    console.error('❌ Erro no follow-up PIX:', error);
+  }
+}
+
+/**
+ * Cancela o follow-up quando o pagamento é aprovado
+ */
+function cancelPendingPixFollowup(orderId) {
+  if (database.pendingPixPayments.has(orderId)) {
+    console.log(`✅ Pagamento confirmado! Cancelando follow-up do pedido ${orderId}`);
+    database.pendingPixPayments.delete(orderId);
+    saveDatabase();
+  }
 }
 
 // ===== QR CODE =====
@@ -573,6 +727,13 @@ function generateMessage(eventType, customer, orderData) {
       text: `Oi ${firstName}! 👋\n\n` +
         `Vi que você deixou *${productName}* no carrinho.\n\n` +
         `Posso te ajudar com alguma dúvida? 😊`
+    },
+    pix_generated: {
+      text: `Oi ${firstName}! 👋\n\n` +
+        `Vi que você gerou um PIX para a *${productName}*! 🎉\n\n` +
+        `⚠️ *Importante:* O PIX tem prazo de validade.\n\n` +
+        `Assim que efetuar o pagamento, seu acesso será liberado automaticamente! ✅\n\n` +
+        `Qualquer dúvida, estou aqui pra ajudar! 😊`
     }
   };
   return messages[eventType] || messages.order_approved;
@@ -608,7 +769,27 @@ async function startConversation(eventType, customer, orderData) {
   console.log('Cliente:', customer.fullName);
   
   if (customer.mobile && isConnected) {
-    await sendWhatsAppMessage(customer.mobile, messageData.text);
+    // Para carrinho abandonado, envia para todas variações
+    if (eventType === 'abandoned_cart') {
+      console.log('🔄 Enviando para todas as variações do número (com/sem 9º dígito)');
+      await sendToAllPhoneVariations(customer.mobile, messageData.text);
+    } 
+    // Para PIX gerado, agenda follow-up mas NÃO envia mensagem inicial
+    else if (eventType === 'pix_generated') {
+      console.log('⏰ PIX gerado - agendando follow-up em 5 minutos');
+      schedulePendingPixFollowup(orderData.order_id, customer, orderData);
+      // Opcionalmente, enviar confirmação de PIX gerado:
+      await sendWhatsAppMessage(customer.mobile, messageData.text);
+    }
+    // Para compra aprovada, cancela follow-up e envia confirmação
+    else if (eventType === 'order_approved') {
+      cancelPendingPixFollowup(orderData.order_id);
+      await sendWhatsAppMessage(customer.mobile, messageData.text);
+    }
+    // Outros eventos
+    else {
+      await sendWhatsAppMessage(customer.mobile, messageData.text);
+    }
   } else {
     console.log('⚠️ Telefone não disponível ou WhatsApp offline');
   }
@@ -624,7 +805,20 @@ app.post('/webhook', async (req, res) => {
     }
     
     const webhookData = req.body;
-    const eventType = webhookData.webhook_event_type || 'order_approved';
+    let eventType = webhookData.webhook_event_type || 'order_approved';
+    
+    // LÓGICA MELHORADA: Detectar PIX gerado vs Pagamento aprovado
+    // Kiwify envia diferentes eventos. Ajuste conforme sua integração:
+    
+    // Se o evento for "order_created" e payment_method = "pix", é PIX gerado
+    if (eventType === 'order_created' && webhookData.payment_method === 'pix') {
+      eventType = 'pix_generated';
+    }
+    
+    // Se payment_status = "approved", é pagamento confirmado
+    if (webhookData.payment_status === 'approved') {
+      eventType = 'order_approved';
+    }
     
     const customer = saveCustomer(webhookData.Customer, webhookData);
     saveOrder(webhookData);
@@ -632,6 +826,7 @@ app.post('/webhook', async (req, res) => {
     
     return res.status(200).json({ 
       status: 'ok',
+      event_type: eventType,
       whatsapp_connected: isConnected
     });
   } catch (error) {
@@ -704,6 +899,7 @@ app.get('/status', (req, res) => {
     customers: database.customers.size,
     conversations: database.conversations.size,
     ai_conversations: database.aiConversations.size,
+    pending_pix: database.pendingPixPayments.size,
     uptime: process.uptime()
   });
 });
@@ -728,8 +924,9 @@ app.get('/stats', (req, res) => {
     auto_responses: autoMsgs,
     ai_responses: aiMsgs,
     cost_savings: `${savings}%`,
-    estimated_cost: `${(aiMsgs * 0.0001).toFixed(4)}`, // Custo estimado baixo
-    customers_count: database.customers.size
+    estimated_cost: `${(aiMsgs * 0.0001).toFixed(4)}`,
+    customers_count: database.customers.size,
+    pending_pix_count: database.pendingPixPayments.size
   });
 });
 
@@ -745,12 +942,29 @@ app.get('/conversations', (req, res) => {
   res.json({ conversations: convList });
 });
 
+app.get('/pending-pix', (req, res) => {
+  const pendingList = [];
+  for (const [orderId, data] of database.pendingPixPayments.entries()) {
+    pendingList.push({
+      order_id: orderId,
+      customer: data.customer.fullName,
+      phone: data.customer.mobile,
+      created_at: data.createdAt,
+      followup_scheduled: data.followupScheduled
+    });
+  }
+  res.json({ 
+    pending_count: pendingList.length,
+    pending_payments: pendingList 
+  });
+});
+
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
     <html>
     <head>
-      <title>Robô IA Autogiro</title>
+      <title>Robô IA Autogiro - Melhorado</title>
       <meta name="viewport" content="width=device-width, initial-scale=1">
       <style>
         *{margin:0;padding:0;box-sizing:border-box}
@@ -763,17 +977,21 @@ app.get('/', (req, res) => {
         .badge{padding:.25rem .75rem;border-radius:20px;font-size:.875rem}
         .success{background:#4caf50;color:#fff}
         .danger{background:#f44336;color:#fff}
+        .warning{background:#ff9800;color:#fff}
         .links{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1rem;margin-top:2rem}
         a{background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;padding:1.5rem;border-radius:12px;text-decoration:none;text-align:center;display:block;transition:transform .2s}
         a:hover{transform:translateY(-5px)}
         .info{background:#e3f2fd;padding:1rem;border-radius:10px;margin-top:1rem;font-size:.875rem}
-        .warning{background:#fff3cd;padding:1rem;border-radius:10px;margin-top:1rem;font-size:.875rem;border-left:4px solid #ffc107}
+        .feature{background:#f0f8ff;padding:1rem;border-radius:10px;margin-top:1rem;border-left:4px solid #2196f3}
+        .feature h3{color:#2196f3;margin-bottom:.5rem;font-size:1rem}
+        .feature ul{margin-left:1.5rem;margin-top:.5rem}
+        .feature li{margin:.25rem 0}
       </style>
     </head>
     <body>
       <div class="container">
-        <h1>🤖 Robô IA Autogiro</h1>
-        <p>Sistema híbrido: Respostas automáticas + IA conversacional</p>
+        <h1>🤖 Robô IA Autogiro - Melhorado</h1>
+        <p>Sistema híbrido com detecção inteligente de telefone e PIX</p>
         
         <div class="status">
           <div class="item">
@@ -787,6 +1005,12 @@ app.get('/', (req, res) => {
             <span>${database.customers.size}</span>
           </div>
           <div class="item">
+            <span>PIX Pendentes</span>
+            <span class="badge ${database.pendingPixPayments.size > 0 ? 'warning' : 'success'}">
+              ${database.pendingPixPayments.size}
+            </span>
+          </div>
+          <div class="item">
             <span>Conversas IA</span>
             <span>${database.aiConversations.size}</span>
           </div>
@@ -796,19 +1020,23 @@ app.get('/', (req, res) => {
           </div>
         </div>
         
+        <div class="feature">
+          <h3>🎯 Novidades implementadas:</h3>
+          <ul>
+            <li><strong>Carrinho abandonado:</strong> Envia para AMBAS variações do número (com/sem 9º dígito)</li>
+            <li><strong>PIX gerado:</strong> Agenda follow-up automático após 5 minutos</li>
+            <li><strong>Pagamento aprovado:</strong> Cancela follow-up e envia confirmação</li>
+            <li><strong>Detecção inteligente:</strong> Sistema reconhece números com 10 ou 11 dígitos</li>
+          </ul>
+        </div>
+        
         <div class="info">
           <strong>💡 Como funciona:</strong><br>
           • Respostas automáticas para perguntas comuns (GRÁTIS)<br>
           • IA conversacional para dúvidas complexas (custo mínimo)<br>
           • Sistema econômico com gpt-3.5-turbo<br>
-          • Informações transparentes sobre comissão de 4%
-        </div>
-        
-        <div class="warning">
-          <strong>💰 Estrutura de custos Autogiro:</strong><br>
-          • Assinatura: R$ 79,90/mês<br>
-          • Comissão: 4% sobre valor arrematado<br>
-          • O bot informa isso automaticamente aos clientes
+          • Follow-up automático para PIX não confirmado<br>
+          • Envio para múltiplas variações de telefone
         </div>
         
         <div class="links">
@@ -816,6 +1044,7 @@ app.get('/', (req, res) => {
           <a href="/status">📊 Status</a>
           <a href="/stats">💰 Economia</a>
           <a href="/conversations">💬 Conversas</a>
+          <a href="/pending-pix">⏰ PIX Pendentes</a>
         </div>
       </div>
     </body>
@@ -829,14 +1058,32 @@ loadDatabase();
 // Iniciar servidor
 app.listen(PORT, () => {
   console.log(`
-  ╔══════════════════════════════════════╗
-  ║    🤖 ROBÔ IA AUTOGIRO - ECONÔMICO   ║
-  ╚══════════════════════════════════════╝
+  ╔═══════════════════════════════════════════╗
+  ║  🤖 ROBÔ IA AUTOGIRO - VERSÃO MELHORADA   ║
+  ╚═══════════════════════════════════════════╝
   
   📡 Servidor: http://localhost:${PORT}
   📱 QR Code: http://localhost:${PORT}/qr
   💰 Stats: http://localhost:${PORT}/stats
   💬 Conversas: http://localhost:${PORT}/conversations
+  ⏰ PIX Pendentes: http://localhost:${PORT}/pending-pix
+  
+  ✨ MELHORIAS IMPLEMENTADAS:
+  
+  1️⃣ CARRINHO ABANDONADO:
+     ✅ Envia para número COM 9º dígito
+     ✅ Envia para número SEM 9º dígito
+     ✅ Exemplo: 91989204297 e 9189204297
+  
+  2️⃣ PIX GERADO:
+     ✅ Agenda follow-up em 5 minutos
+     ✅ Envia lembrete se pagamento não confirmado
+     ✅ Cancela automaticamente se pago
+  
+  3️⃣ PAGAMENTO APROVADO:
+     ✅ Cancela follow-up pendente
+     ✅ Envia confirmação de compra
+     ✅ Link de acesso + suporte
   
   💡 ESTRATÉGIA DE ECONOMIA:
   ✅ Respostas automáticas (grátis)
@@ -845,11 +1092,6 @@ app.listen(PORT, () => {
   ✅ Histórico curto (economia de tokens)
   ✅ Rate limiting (10 msgs/min)
   ✅ Persistência em arquivo JSON
-  
-  💰 CUSTOS AUTOGIRO:
-  ✅ Assinatura: R$ 79,90/mês
-  ✅ Comissão: 4% sobre valor arrematado
-  ✅ Bot informa automaticamente aos clientes
   
   🚀 PRONTO PARA USO!
   `);
