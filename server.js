@@ -798,49 +798,98 @@ async function startConversation(eventType, customer, orderData) {
 // ===== ENDPOINTS =====
 app.post('/webhook', async (req, res) => {
   try {
+    console.log('\n📥 WEBHOOK RECEBIDO:', JSON.stringify(req.body, null, 2));
+    
     const { signature } = req.query;
     
     if (!verifySignature(req.body, signature)) {
+      console.error('❌ Assinatura inválida!');
       return res.status(400).json({ error: 'Invalid signature' });
     }
     
     const webhookData = req.body;
     let eventType = webhookData.webhook_event_type || 'order_approved';
     
-    // 🔴 NOVO: Detectar pedido recusado
-    // OPCIONAL: Oferecer suporte após rejeição
-if (webhookData.order_status === 'refused') {
-  const customer = saveCustomer(webhookData.Customer, webhookData);
-  const supportMessage = 
-    `Oi ${customer.firstName || 'Cliente'}! 👋\n\n` +
-    `Notei que houve um problema com o pagamento da *Comunidade VIP Autogiro*.\n\n` +
-    `🔴 Motivo: Recusado pelo banco\n\n` +
-    `Se precisar de ajuda para tentar novamente ou quiser usar outra forma de pagamento, ` +
-    `é só me chamar! Estou aqui pra te ajudar. 😊\n\n` +
-    `Link para nova tentativa:\n${PRODUCTS.vip.link}`;
-  
-  if (customer.mobile && isConnected) {
-    await sendWhatsAppMessage(customer.mobile, supportMessage);
-  }
-  
-  saveOrder(webhookData);
-  return res.status(200).json({ 
-    status: 'ok',
-    event_type: 'order_rejected_with_support',
-    message: 'Mensagem de suporte enviada'
-  });
-}
+    // 🔴 CARRINHO ABANDONADO - Estrutura diferente!
+    if (webhookData.cart && webhookData.cart.status === 'abandoned') {
+      console.log('\n🛒 CARRINHO ABANDONADO detectado!');
+      
+      // Extrair dados do carrinho
+      const cart = webhookData.cart;
+      const customerData = {
+        email: cart.email,
+        fullName: cart.name,
+        firstName: cart.first_name,
+        mobile: cart.phone,
+        cpf: cart.cpf
+      };
+      
+      const orderData = {
+        order_id: cart.id,
+        product_name: cart.product_name,
+        subscription_plan: cart.subscription_plan,
+        checkout_link: cart.checkout_link,
+        created_at: cart.created_at
+      };
+      
+      console.log('📋 Dados extraídos:');
+      console.log('  Cliente:', customerData.firstName, customerData.mobile);
+      console.log('  Produto:', orderData.product_name);
+      
+      const customer = saveCustomer(customerData, orderData);
+      saveOrder(orderData);
+      
+      // Envia para todas as variações do telefone
+      await startConversation('abandoned_cart', customer, orderData);
+      
+      return res.status(200).json({ 
+        status: 'ok',
+        event_type: 'abandoned_cart',
+        whatsapp_connected: isConnected,
+        phone_variations_sent: true,
+        customer: customerData.firstName,
+        phone: customerData.mobile
+      });
+    }
+    
+    // 🔴 Detectar pedido recusado
+    if (webhookData.order_status === 'refused') {
+      console.log('❌ PEDIDO RECUSADO detectado!');
+      const customer = saveCustomer(webhookData.Customer, webhookData);
+      const supportMessage = 
+        `Oi ${customer.firstName || 'Cliente'}! 👋\n\n` +
+        `Notei que houve um problema com o pagamento da *Comunidade VIP Autogiro*.\n\n` +
+        `🔴 Motivo: Recusado pelo banco\n\n` +
+        `Se precisar de ajuda para tentar novamente ou quiser usar outra forma de pagamento, ` +
+        `é só me chamar! Estou aqui pra te ajudar. 😊\n\n` +
+        `Link para nova tentativa:\n${PRODUCTS.vip.link}`;
+      
+      if (customer.mobile && isConnected) {
+        await sendWhatsAppMessage(customer.mobile, supportMessage);
+      }
+      
+      saveOrder(webhookData);
+      return res.status(200).json({ 
+        status: 'ok',
+        event_type: 'order_rejected_with_support',
+        message: 'Mensagem de suporte enviada'
+      });
+    }
     
     // PIX gerado
     if (eventType === 'order_created' && webhookData.payment_method === 'pix') {
+      console.log('💳 PIX GERADO detectado!');
       eventType = 'pix_generated';
     }
     
     // Pagamento aprovado
     if (webhookData.payment_status === 'approved' || 
         webhookData.order_status === 'paid') {
+      console.log('✅ PAGAMENTO APROVADO detectado!');
       eventType = 'order_approved';
     }
+    
+    console.log('🎯 Event Type:', eventType);
     
     const customer = saveCustomer(webhookData.Customer, webhookData);
     saveOrder(webhookData);
@@ -853,10 +902,13 @@ if (webhookData.order_status === 'refused') {
     });
   } catch (error) {
     console.error('❌ Webhook error:', error);
-    return res.status(500).json({ error: error.message });
+    console.error('Stack:', error.stack);
+    return res.status(500).json({ 
+      error: error.message,
+      stack: error.stack
+    });
   }
 });
-
 app.get('/qr', (req, res) => {
   if (qrCodeDataURL) {
     res.send(`
