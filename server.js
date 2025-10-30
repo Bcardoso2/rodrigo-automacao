@@ -674,18 +674,18 @@ function saveCustomer(customerData, orderData) {
   const customerId = customerData.email;
   const customer = {
     email: customerData.email,
-    fullName: customerData.full_name,
-    firstName: customerData.first_name,
-    mobile: customerData.mobile,
-    cpf: customerData.CPF,
-    lastOrder: orderData.order_id,
+    fullName: customerData.full_name || customerData.fullName,
+    firstName: customerData.first_name || customerData.firstName,
+    mobile: customerData.mobile || customerData.phone,
+    cpf: customerData.CPF || customerData.cpf,
+    lastOrder: orderData.order_id || orderData.id,
     createdAt: database.customers.has(customerId) 
       ? database.customers.get(customerId).createdAt 
       : new Date(),
     updatedAt: new Date(),
     orders: [
       ...(database.customers.get(customerId)?.orders || []),
-      orderData.order_id
+      orderData.order_id || orderData.id
     ]
   };
   database.customers.set(customerId, customer);
