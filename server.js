@@ -63,7 +63,7 @@ const PRODUCTS = {
     id: 'vip',
     name: 'Comunidade VIP Autogiro',
     price: 79.90,
-    description: 'Acesso a 40+ ofertas diárias de carros/motos até 40% abaixo da FIPE.',
+    description: 'Acesso a 100+ ofertas diárias de carros/motos até 40% abaixo da FIPE.',
     link: 'https://pay.kiwify.com.br/qAAxyjd' // SEU LINK ATUALIZADO
   }
 };
@@ -410,7 +410,7 @@ const AI_SYSTEM_PROMPT = `Você é um especialista em vendas da Autogiro. Seja b
 PRODUTO ÚNICO:
 - Nome: Comunidade VIP Autogiro
 - Preço: R$ 79,90/mês (Promocional)
-- O que é: Acesso a 40+ ofertas diárias de carros/motos (até 40% abaixo da FIPE).
+- O que é: Acesso a 100+ ofertas diárias de carros/motos (até 40% abaixo da FIPE).
 - NÃO É LEILÃO. É retomada de financiamento (fonte primária).
 - É SEGURO. Tudo tem Laudo Cautelar antes da compra.
 - NÃO TEM FIDELIDADE. Cancela quando quiser.
@@ -807,16 +807,38 @@ app.post('/webhook', async (req, res) => {
     const webhookData = req.body;
     let eventType = webhookData.webhook_event_type || 'order_approved';
     
-    // LÓGICA MELHORADA: Detectar PIX gerado vs Pagamento aprovado
-    // Kiwify envia diferentes eventos. Ajuste conforme sua integração:
+    // 🔴 NOVO: Detectar pedido recusado
+    // OPCIONAL: Oferecer suporte após rejeição
+if (webhookData.order_status === 'refused') {
+  const customer = saveCustomer(webhookData.Customer, webhookData);
+  const supportMessage = 
+    `Oi ${customer.firstName || 'Cliente'}! 👋\n\n` +
+    `Notei que houve um problema com o pagamento da *Comunidade VIP Autogiro*.\n\n` +
+    `🔴 Motivo: Recusado pelo banco\n\n` +
+    `Se precisar de ajuda para tentar novamente ou quiser usar outra forma de pagamento, ` +
+    `é só me chamar! Estou aqui pra te ajudar. 😊\n\n` +
+    `Link para nova tentativa:\n${PRODUCTS.vip.link}`;
+  
+  if (customer.mobile && isConnected) {
+    await sendWhatsAppMessage(customer.mobile, supportMessage);
+  }
+  
+  saveOrder(webhookData);
+  return res.status(200).json({ 
+    status: 'ok',
+    event_type: 'order_rejected_with_support',
+    message: 'Mensagem de suporte enviada'
+  });
+}
     
-    // Se o evento for "order_created" e payment_method = "pix", é PIX gerado
+    // PIX gerado
     if (eventType === 'order_created' && webhookData.payment_method === 'pix') {
       eventType = 'pix_generated';
     }
     
-    // Se payment_status = "approved", é pagamento confirmado
-    if (webhookData.payment_status === 'approved') {
+    // Pagamento aprovado
+    if (webhookData.payment_status === 'approved' || 
+        webhookData.order_status === 'paid') {
       eventType = 'order_approved';
     }
     
