@@ -810,26 +810,25 @@ app.post('/webhook', async (req, res) => {
     const webhookData = req.body;
     let eventType = webhookData.webhook_event_type || 'order_approved';
     
-    // 🔴 CARRINHO ABANDONADO - Estrutura diferente!
-    if (webhookData.cart && webhookData.cart.status === 'abandoned') {
+    // 🔴 CARRINHO ABANDONADO - Dados na raiz!
+    if (webhookData.status === 'abandoned' && webhookData.checkout_link) {
       console.log('\n🛒 CARRINHO ABANDONADO detectado!');
       
-      // Extrair dados do carrinho
-      const cart = webhookData.cart;
+      // Os dados já estão na raiz do JSON
       const customerData = {
-        email: cart.email,
-        fullName: cart.name,
-        firstName: cart.first_name,
-        mobile: cart.phone,
-        cpf: cart.cpf
+        email: webhookData.email,
+        fullName: webhookData.name,
+        firstName: webhookData.first_name,
+        mobile: webhookData.phone,
+        cpf: webhookData.cpf
       };
       
       const orderData = {
-        order_id: cart.id,
-        product_name: cart.product_name,
-        subscription_plan: cart.subscription_plan,
-        checkout_link: cart.checkout_link,
-        created_at: cart.created_at
+        order_id: webhookData.id,
+        product_name: webhookData.product_name,
+        subscription_plan: webhookData.subscription_plan,
+        checkout_link: webhookData.checkout_link,
+        created_at: webhookData.created_at
       };
       
       console.log('📋 Dados extraídos:');
