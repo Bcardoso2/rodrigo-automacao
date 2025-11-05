@@ -315,7 +315,7 @@ const AUTO_RESPONSES = {
 
   info_produto: {
     keywords: ['produtos', 'produto', 'o que vende', 'opções', 'catalogo', 'preço', 'preco', 'valor', 'quanto custa', 'comprar', 'quero', 'link', 'assinar', 'vip', 'como funciona', 'me interessa'],
-    response: () => `Claro! Nós temos a *Comunidade VIP Autogiro*. 💎\n\nFunciona assim: você entra no grupo e recebe mais de *40 ofertas todos os dias* de carros e motos com descontos absurdos (até 40% abaixo da FIPE).\n\n💰 O valor normal é R$ 199,90, mas hoje está por apenas *R$ 79,90 por mês*.\n\nE o melhor:\n✅ São carros bons (todos com Laudo Cautelar)\n✅ Nosso time negocia pra você\n✅ *Sem fidelidade*, você pode sair quando quiser.\n\nO link pra entrar é este aqui: \n${PRODUCTS.vip.link}\n\nFicou alguma dúvida? Só mandar!`
+    response: () => `Claro! Nós temos a *Comunidade VIP Autogiro*. 💎\n\nFunciona assim: você entra no grupo e recebe mais de *100 ofertas todos os dias* de carros e motos com descontos absurdos (até 40% abaixo da FIPE).\n\n💰 O valor normal é R$ 199,90, mas hoje está por apenas *R$ 79,90 por mês*.\n\nE o melhor:\n✅ São carros bons (todos com Laudo Cautelar)\n✅ Nosso time negocia pra você\n✅ *Sem fidelidade*, você pode sair quando quiser.\n\nO link pra entrar é este aqui: \n${PRODUCTS.vip.link}\n\nFicou alguma dúvida? Só mandar!`
   },
   
   origem_carros: {
@@ -345,7 +345,7 @@ const AUTO_RESPONSES = {
   
   frequencia: {
     keywords: ['frequencia', 'quantas ofertas', 'quando', 'todo dia', 'horário'],
-    response: () => `Toda semana, de *Terça a Sábado*, o grupo ferve! 🔥\n\nSão mais de 40 novas oportunidades todos os dias pra você analisar.`
+    response: () => `Toda semana, de *Terça a Sábado*, o grupo ferve! 🔥\n\nSão mais de 100 novas oportunidades todos os dias pra você analisar.`
   },
 
   comissao_taxas: {
