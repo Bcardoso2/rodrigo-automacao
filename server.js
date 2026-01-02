@@ -62,9 +62,9 @@ const PRODUCTS = {
   vip: {
     id: 'vip',
     name: 'Comunidade VIP Autogiro',
-    price: 79.90,
+    price: 97.00,
     description: 'Acesso a 100+ ofertas diárias de carros/motos até 40% abaixo da FIPE.',
-    link: 'https://pay.kiwify.com.br/qAAxyjd' // SEU LINK ATUALIZADO
+    link: 'https://pay.kiwify.com.br/3UxHqEi' // SEU LINK ATUALIZADO
   }
 };
 
@@ -315,7 +315,7 @@ const AUTO_RESPONSES = {
 
   info_produto: {
     keywords: ['produtos', 'produto', 'o que vende', 'opções', 'catalogo', 'preço', 'preco', 'valor', 'quanto custa', 'comprar', 'quero', 'link', 'assinar', 'vip', 'como funciona', 'me interessa'],
-    response: () => `Claro! Nós temos a *Comunidade VIP Autogiro*. 💎\n\nFunciona assim: você entra no grupo e recebe mais de *100 ofertas todos os dias* de carros e motos com descontos absurdos (até 40% abaixo da FIPE).\n\n💰 O valor normal é R$ 199,90, mas hoje está por apenas *R$ 79,90 por mês*.\n\nE o melhor:\n✅ São carros bons (todos com Laudo Cautelar)\n✅ Nosso time negocia pra você\n✅ *Sem fidelidade*, você pode sair quando quiser.\n\nO link pra entrar é este aqui: \n${PRODUCTS.vip.link}\n\nFicou alguma dúvida? Só mandar!`
+    response: () => `Claro! Nós temos a *Comunidade VIP Autogiro*. 💎\n\nFunciona assim: você entra no grupo e recebe mais de *100 ofertas todos os dias* de carros e motos com descontos absurdos (até 40% abaixo da FIPE).\n\n💰 O valor normal é R$ 199,90, mas hoje está por apenas *R$ 97,00 por mês*.\n\nE o melhor:\n✅ São carros bons (todos com Laudo Cautelar)\n✅ Nosso time negocia pra você\n✅ *Sem fidelidade*, você pode sair quando quiser.\n\nO link pra entrar é este aqui: \n${PRODUCTS.vip.link}\n\nFicou alguma dúvida? Só mandar!`
   },
   
   origem_carros: {
@@ -350,7 +350,7 @@ const AUTO_RESPONSES = {
 
   comissao_taxas: {
     keywords: ['comissão', 'comissao', 'taxa', 'custo adicional', 'cobram', 'outros custos', 'valor extra'],
-    response: () => `Boa pergunta! Transparência é fundamental. 📊\n\n*Custos da Autogiro:*\n\n1️⃣ *Assinatura mensal:* R$ 79,90 (acesso às ofertas)\n\n2️⃣ *Comissão por carro arrematado:* 4% sobre o valor do veículo\n\nExemplo prático:\n• Carro arrematado por R$ 30.000\n• Comissão = R$ 1.200 (4%)\n• Total investido: R$ 31.200\n\n💡 Mesmo com a comissão, você ainda economiza MUITO, já que os descontos chegam a 40% da FIPE!\n\nAlguma dúvida sobre os custos?`
+    response: () => `Boa pergunta! Transparência é fundamental. 📊\n\n*Custos da Autogiro:*\n\n1️⃣ *Assinatura mensal:* R$ 97,00 (acesso às ofertas)\n\n2️⃣ *Comissão por carro arrematado:* 4% sobre o valor do veículo\n\nExemplo prático:\n• Carro arrematado por R$ 30.000\n• Comissão = R$ 1.200 (4%)\n• Total investido: R$ 31.200\n\n💡 Mesmo com a comissão, você ainda economiza MUITO, já que os descontos chegam a 40% da FIPE!\n\nAlguma dúvida sobre os custos?`
   }
 };
 
@@ -409,14 +409,14 @@ const AI_SYSTEM_PROMPT = `Você é um especialista em vendas da Autogiro. Seja b
 
 PRODUTO ÚNICO:
 - Nome: Comunidade VIP Autogiro
-- Preço: R$ 79,90/mês (Promocional)
+- Preço: R$ 97,00/mês (Promocional)
 - O que é: Acesso a 100+ ofertas diárias de carros/motos (até 40% abaixo da FIPE).
 - NÃO É LEILÃO. É retomada de financiamento (fonte primária).
 - É SEGURO. Tudo tem Laudo Cautelar antes da compra.
 - NÃO TEM FIDELIDADE. Cancela quando quiser.
 
 CUSTOS ADICIONAIS:
-- Assinatura: R$ 79,90/mês
+- Assinatura: R$ 97,00/mês
 - Comissão: 4% sobre o valor do veículo arrematado
 - Exemplo: Carro de R$ 30.000 = comissão de R$ 1.200
 
